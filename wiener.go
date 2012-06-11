@@ -13,8 +13,8 @@ import (
 	"github.com/tanaton/get2ch-go"
 	"code.google.com/p/go-charset/charset"
 	_ "code.google.com/p/go-charset/data"
-    "github.com/ziutek/mymysql/mysql"
-    _ "github.com/ziutek/mymysql/thrsafe"
+	"github.com/ziutek/mymysql/mysql"
+	_ "github.com/ziutek/mymysql/thrsafe"
 )
 
 type Nich struct {
