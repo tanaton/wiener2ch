@@ -102,6 +102,16 @@ func (sec *Section) mainSection(c *Config, sync chan *Section) {
 	var db mysql.Conn
 	pch := make(chan *Packet, 2)
 	fch := make(chan bool)
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Panic!! %v", r)
+		}
+		if checkOpen(fch) {
+			close(fch)
+		}
+		close(pch)
+		sync <- sec
+	}()
 
 	if c.db != nil {
 		db = mysql.New("tcp", "", fmt.Sprintf("%s:%d", c.db.host, c.db.port), c.db.user, c.db.pass, c.db.name)
@@ -126,8 +136,6 @@ func (sec *Section) mainSection(c *Config, sync chan *Section) {
 		time.Sleep(GO_THREAD_SLEEP_TIME)
 	}
 	time.Sleep(RESTART_SLEEP_TIME)
-	close(pch)
-	sync <- sec
 }
 
 func (sec *Section) mainThread(key string, db mysql.Conn, pch chan *Packet, fch <-chan bool) {
@@ -140,20 +148,24 @@ func (sec *Section) mainThread(key string, db mysql.Conn, pch chan *Packet, fch 
 	}
 	ses.db = db
 
-	bl, ok := sec.sl[key];
+	bl, ok := sec.sl[key]
 	if ok == false { return }
 
 	for _, nich := range bl {
 		if !checkOpen(fch) { return }
+		if sec.bbn {
+		} else {
+			if ses.get.Bourbon {
+				sec.bbn = true
+			}
+		}
 		// 板の取得
 		tl, err := ses.getBoard(nich)
 		if err == nil {
 			if tl != nil && len(tl) > 0 {
 				bid := ses.getMysqlBoardNo(nich.board)
 				// スレッドの取得
-				if !ses.getThread(tl, bid, fch) {
-					return
-				}
+				if !ses.getThread(tl, bid, fch) { return }
 			}
 		} else {
 			// 板が移転した可能性あり
@@ -342,9 +354,9 @@ func (ses *Session) setMysqlResQuery(data []byte, n Nich, bid, resno int) {
 		query += strings.Join(ql, ",")
 		_, _, err := ses.db.Query(query)
 		if err != nil {
-			fmt.Printf("error: mysql挿入失敗\n");
+			log.Printf("error: mysql挿入失敗\n")
 		} else {
-			fmt.Printf("mysql挿入数:%d\n", l);
+			log.Printf("mysql挿入数:%d\n", l)
 		}
 	}
 }
