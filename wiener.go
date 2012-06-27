@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"strconv"
+	"sync"
 	"time"
 	"github.com/tanaton/get2ch-go"
 	"code.google.com/p/go-charset/charset"
@@ -40,17 +41,17 @@ type SalamiConfig struct {
 
 type Section struct {
 	sc			SalamiConfig
-	slch		<-chan map[string]string
+	dbc			*DataBase
 	bl			[]string
 	sl			map[string][]Nich
 	bbn			bool
-	bbnTime		time.Duration
+	bbnLimit	time.Time
+	bbnMux		sync.Mutex
 }
 
 type Config struct {
 	v			map[string]interface{}
 	section		[]*Section
-	db			*DataBase
 }
 
 type Session struct {
@@ -64,17 +65,18 @@ type Packet struct {
 }
 
 const (
+	DAT_DIR					= "/2ch/dat"
 	GO_THREAD_SLEEP_TIME	= 2 * time.Second
 	THREAD_SLEEP_TIME		= 4 * time.Second
 	RESTART_SLEEP_TIME		= 60 * time.Second
+	SERVER_CYCLE_TIME		= 60 * time.Minute
+	BBN_LIMIT_TIME			= 10 * time.Minute
 	CONFIG_JSON_PATH_DEF	= "wiener.json"
 )
 
 var g_reg_bbs *regexp.Regexp = regexp.MustCompile("(.+\\.2ch\\.net|.+\\.bbspink\\.com)/(.+)<>")
-var g_reg_dat *regexp.Regexp = regexp.MustCompile("^(.+)\\.dat<>")
-var g_reg_res *regexp.Regexp = regexp.MustCompile(" [(]([0-9]+)[)]$")
+var g_reg_dat *regexp.Regexp = regexp.MustCompile("^(\\d{9,10})\\.dat<>.* \\(([0-9]+)\\)$")
 var g_reg_date *regexp.Regexp = regexp.MustCompile("^.*?<>.*?<>.*?(\\d{4})\\/(\\d{2})\\/(\\d{2}).*?(\\d{2}):(\\d{2}):(\\d{2})")
-var g_cache get2ch.Cache = get2ch.NewFileCache("/2ch/dat")
 
 var g_filter map[string]bool = map[string]bool{
 	"ipv6.2ch.net"			: true,
@@ -83,38 +85,54 @@ var g_filter map[string]bool = map[string]bool{
 }
 
 func main() {
-	c := readConfig()
-	loadSectionList(c)
+	slch := getServerCh()
 	sync := make(chan *Section)
-	// メイン処理
-	for _, sec := range c.section {
-		go sec.mainSection(c, sync)
-		time.Sleep(GO_THREAD_SLEEP_TIME)
-	}
+
+	// 起動
+	start(slch, sync)
+
 	for {
 		// 処理を止める
 		sec := <-sync
-		go sec.mainSection(c, sync)
+		sec.updateSection(<-slch)
+		go sec.mainSection(sync)
 	}
 }
 
-func (sec *Section) mainSection(c *Config, sync chan *Section) {
+func start(slch <-chan *map[string]string, sync chan<- *Section) {
+	sl := <-slch
+	seclist := readConfig(sl)
+	// メイン処理
+	for _, sec := range seclist {
+		sec.updateSection(sl)
+		go sec.mainSection(sync)
+		time.Sleep(GO_THREAD_SLEEP_TIME)
+	}
+}
+
+func (sec *Section) mainSection(sync chan<- *Section) {
 	var db mysql.Conn
-	pch := make(chan *Packet, 2)
+	pch := make(chan *Packet, 4)
 	fch := make(chan bool)
 	defer func() {
 		if r := recover(); r != nil {
+			// panic対策
 			log.Printf("Panic!! %v", r)
 		}
 		if checkOpen(fch) {
 			close(fch)
 		}
 		close(pch)
+
+		// DBクローズ
+		if db != nil {
+			db.Close()
+		}
 		sync <- sec
 	}()
 
-	if c.db != nil {
-		db = mysql.New("tcp", "", fmt.Sprintf("%s:%d", c.db.host, c.db.port), c.db.user, c.db.pass, c.db.name)
+	if sec.dbc != nil {
+		db = mysql.New("tcp", "", fmt.Sprintf("%s:%d", sec.dbc.host, sec.dbc.port), sec.dbc.user, sec.dbc.pass, sec.dbc.name)
 		err := db.Connect()
 		if err != nil { db = nil }
 	}
@@ -141,7 +159,7 @@ func (sec *Section) mainSection(c *Config, sync chan *Section) {
 func (sec *Section) mainThread(key string, db mysql.Conn, pch chan *Packet, fch <-chan bool) {
 	jmp := false
 	ses := &Session{
-		get		: get2ch.NewGet2ch(get2ch.NewFileCache("/2ch/dat")),
+		get		: get2ch.NewGet2ch(get2ch.NewFileCache(DAT_DIR)),
 	}
 	if sec.sc.host != "" {
 		ses.get.SetSalami(sec.sc.host, sec.sc.port)
@@ -151,14 +169,11 @@ func (sec *Section) mainThread(key string, db mysql.Conn, pch chan *Packet, fch 
 	bl, ok := sec.sl[key]
 	if ok == false { return }
 
+	// バーボン判定
+	sec.checkBourbon(ses.get)
+
 	for _, nich := range bl {
 		if !checkOpen(fch) { return }
-		if sec.bbn {
-		} else {
-			if ses.get.Bourbon {
-				sec.bbn = true
-			}
-		}
 		// 板の取得
 		tl, err := ses.getBoard(nich)
 		if err == nil {
@@ -171,6 +186,8 @@ func (sec *Section) mainThread(key string, db mysql.Conn, pch chan *Packet, fch 
 			// 板が移転した可能性あり
 			jmp = true
 		}
+		// バーボン判定
+		sec.checkBourbon(ses.get)
 		// 止める
 		time.Sleep(THREAD_SLEEP_TIME)
 	}
@@ -178,6 +195,30 @@ func (sec *Section) mainThread(key string, db mysql.Conn, pch chan *Packet, fch 
 		pch <- &Packet{
 			key		: key,
 			jmp		: jmp,
+		}
+	}
+}
+
+func (sec *Section) checkBourbon(get *get2ch.Get2ch) {
+	sec.bbnMux.Lock()
+	defer sec.bbnMux.Unlock()
+
+	if sec.bbn {
+		// すでにバーボン
+		if time.Now().After(sec.bbnLimit) {
+			// バーボン解除
+			sec.bbn = false
+			get.Bourbon = false
+		} else {
+			// バーボン継続
+			get.Bourbon = true
+		}
+	} else {
+		if get.Bourbon {
+			// 新しくバーボン
+			sec.bbn = true
+			// 10分後までバーボン
+			sec.bbnLimit = time.Now().Add(BBN_LIMIT_TIME)
 		}
 	}
 }
@@ -206,19 +247,17 @@ func (ses *Session) getBoard(nich Nich) ([]Nich, error) {
 	vect := make([]Nich, 0, 1)
 	list := strings.Split(string(data), "\n")
 	for _, it := range list {
-		if da := g_reg_dat.FindStringSubmatch(it); len(da) > 0 {
-			if d := g_reg_res.FindStringSubmatch(it); len(d) > 0 {
-				var n Nich
-				n.server = nich.server
-				n.board = nich.board
-				n.thread = da[1]
-				if m, ok := h[da[1]]; ok {
-					if j, err := strconv.Atoi(d[1]); err == nil && m != j {
-						vect = append(vect, n)
-					}
-				} else {
+		if d := g_reg_dat.FindStringSubmatch(it); len(d) > 0 {
+			var n Nich
+			n.server = nich.server
+			n.board = nich.board
+			n.thread = d[1]
+			if m, ok := h[d[1]]; ok {
+				if j, err := strconv.Atoi(d[2]); err == nil && j > m {
 					vect = append(vect, n)
 				}
+			} else {
+				vect = append(vect, n)
 			}
 		}
 	}
@@ -378,7 +417,7 @@ func sjisToUtf8(data []byte) (string, error) {
 }
 
 func getServer() map[string]string {
-	get := get2ch.NewGet2ch(get2ch.NewFileCache("/2ch/dat"))
+	get := get2ch.NewGet2ch(get2ch.NewFileCache(DAT_DIR))
 	bl := make(map[string]string)
 	data, err := get.GetServer()
 	if err != nil {
@@ -399,34 +438,24 @@ func getServer() map[string]string {
 	return bl
 }
 
-func loadSectionList(c *Config) {
-	slch := getServerCh()
-	sl := <-slch
-
-	for _, sec := range c.section {
-		sec.slch = slch
-		updateSection(sec, &sl)
-	}
-}
-
-func getServerCh() <-chan map[string]string {
-	ch := make(chan map[string]string, 4)
+func getServerCh() <-chan *map[string]string {
+	ch := make(chan *map[string]string, 4)
 	go func() {
-		tch := time.Tick(600 * time.Second)
+		tch := time.Tick(SERVER_CYCLE_TIME)
 		sl := getServer()
 		for {
 			select {
 			case <-tch:
 				sl = getServer()
 			default:
-				ch <- sl
+				ch <- &sl
 			}
 		}
 	}()
 	return ch
 }
 
-func updateSection(sec *Section, sl *map[string]string) {
+func (sec *Section) updateSection(sl *map[string]string) {
 	var nich Nich
 	sec.sl = make(map[string][]Nich)
 	for _, board := range sec.bl {
@@ -443,22 +472,21 @@ func updateSection(sec *Section, sl *map[string]string) {
 }
 
 func threadResList(nich Nich, cache get2ch.Cache) map[string]int {
-	data, err := cache.GetData(nich.server, nich.board, "")
 	h := make(map[string]int)
+	data, err := cache.GetData(nich.server, nich.board, "")
 	if err != nil { return h }
 	list := strings.Split(string(data), "\n")
 	for _, it := range list {
-		if da := g_reg_dat.FindStringSubmatch(it); len(da) > 0 {
-			if d := g_reg_res.FindStringSubmatch(it); len(d) > 0 {
-				m, _ := strconv.Atoi(d[1])
-				h[da[1]] = m
+		if d := g_reg_dat.FindStringSubmatch(it); len(d) == 3 {
+			if m, err := strconv.Atoi(d[2]); err == nil {
+				h[d[1]] = m
 			}
 		}
 	}
 	return h
 }
 
-func readConfig() *Config {
+func readConfig(sl *map[string]string) []*Section {
 	c := &Config{v: make(map[string]interface{})}
 	argc := len(os.Args)
 	var path string
@@ -467,50 +495,71 @@ func readConfig() *Config {
 	} else {
 		path = CONFIG_JSON_PATH_DEF
 	}
-	err := c.readConfig(path)
-	if err != nil {
-		c.readDefault()
-	}
-	return c
+	c.read(path, sl)
+	return c.section
 }
 
-func (c *Config) readConfig(filename string) error {
+func (c *Config) read(filename string, sl *map[string]string) {
 	data, err := ioutil.ReadFile(filename)
-	if err != nil { return err }
+	if err != nil { return }
 	err = json.Unmarshal(data, &c.v)
-	if err != nil { return err }
+	if err != nil { return }
 
+	var dbc *DataBase
 	str := c.getDataString("DBHost", "")
 	if str != "" {
-		c.db = &DataBase{host: str}
-		c.db.port = c.getDataInt("DBPort", 3306)
-		c.db.user = c.getDataString("DBUser", "root")
-		c.db.pass = c.getDataString("DBPass", "passwd")
-		c.db.name = c.getDataString("DBName", "test")
+		dbc = &DataBase{host: str}
+		dbc.port = c.getDataInt("DBPort", 3306)
+		dbc.user = c.getDataString("DBUser", "root")
+		dbc.pass = c.getDataString("DBPass", "passwd")
+		dbc.name = c.getDataString("DBName", "test")
 	}
 
+	c.section = make([]*Section, 0, 1)
+	m := make(map[string]bool)
 	l := c.getDataArray("SectionList", nil)
 	if l != nil {
-		c.section = make([]*Section, 0, 1)
 		for _, it := range l {
 			if data, ok := it.(map[string]interface{}); ok {
 				subc := &Config{v: data}
 				sec := &Section{
+					dbc	: dbc,
 					sc	: SalamiConfig{
 						host	: subc.getDataString("SalamiHost", ""),
 						port	: subc.getDataInt("SalamiPort", 80),
 					},
 					bl	: subc.getDataStringArray("BoardList", nil),
 				}
+				if sec.bl != nil {
+					for _, board := range sec.bl {
+						m[board] = true
+					}
+				}
 				c.section = append(c.section, sec)
 			}
 		}
 	}
-
-	return nil
-}
-
-func (c *Config) readDefault() {
+	bl := make([]string, 0, 1)
+	for b, _ := range *sl {
+		if _, ok := m[b]; ok == false {
+			// 設定ファイルに記載の無い板だった場合
+			bl = append(bl, b)
+		}
+	}
+	if len(bl) > 0 {
+		sec := &Section{
+			dbc	: dbc,
+			sc	: SalamiConfig{
+				host	: "",
+				port	: 80,
+			},
+			bl	: bl,
+		}
+		c.section = append(c.section, sec)
+	}
+	if len(c.section) == 0 {
+		c.section = nil
+	}
 }
 
 func (c *Config) getDataInt(h string, def int) (ret int) {
