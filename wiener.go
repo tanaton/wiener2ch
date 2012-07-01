@@ -76,7 +76,7 @@ const (
 
 var g_reg_bbs *regexp.Regexp = regexp.MustCompile("(.+\\.2ch\\.net|.+\\.bbspink\\.com)/(.+)<>")
 var g_reg_dat *regexp.Regexp = regexp.MustCompile("^(\\d{9,10})\\.dat<>.* \\(([0-9]+)\\)$")
-var g_reg_date *regexp.Regexp = regexp.MustCompile("^.*?<>.*?<>.*?(\\d{4})\\/(\\d{2})\\/(\\d{2}).*?(\\d{2}):(\\d{2}):(\\d{2})")
+var g_reg_date *regexp.Regexp = regexp.MustCompile("^.*?<>.*?<>.*?([0-9]{4})\\/([0-9]{2})\\/([0-9]{2}).*?([0-9]{2}):([0-9]{2}):([0-9]{2})")
 
 var g_filter map[string]bool = map[string]bool{
 	"ipv6.2ch.net"			: true,
@@ -325,8 +325,8 @@ func (ses *Session) getMysqlThreadNo(data []byte, bid int, tstr string) (tid int
 	tid = -1
 
 	if ses.db != nil {
-		tid, err = ses.getMysqlThreadNoQuery(bid, tstr)
-		if err != nil {
+		tid = ses.getMysqlThreadNoQuery(bid, tstr)
+		if tid < 0 {
 			index := bytes.IndexByte(data, '\n')
 			bl := bytes.Split(data[0:index], []byte{'<','>'})
 			if len(bl) <= 4 { return }
@@ -335,23 +335,22 @@ func (ses *Session) getMysqlThreadNo(data []byte, bid int, tstr string) (tid int
 			if err != nil { return }
 			err = ses.setMysqlThreadNoQuery(bid, tstr, title)
 			if err != nil { return }
-			tid, err = ses.getMysqlThreadNoQuery(bid, tstr)
+			tid = ses.getMysqlThreadNoQuery(bid, tstr)
 		}
 	}
 	return
 }
 
-func (ses *Session) getMysqlThreadNoQuery(bid int, tstr string) (int, error) {
-	tid := -1
-	rows, _, err := ses.db.Query("SELECT id FROM threadlist WHERE board_id=%d AND thread=%d", bid, tstr)
-	if err != nil { return -1, err }
+func (ses *Session) getMysqlThreadNoQuery(bid int, tstr string) (tid int) {
+	tid = -1
+	rows, _, err := ses.db.Query("SELECT id FROM threadlist WHERE board_id=%d AND thread=%s", bid, tstr)
+	if err != nil { return }
 
 	for _, row := range rows {
 		tid = row.Int(0)
 		break
 	}
-	if tid < 0 { return -1, errors.New("board id error") }
-	return tid, nil
+	return
 }
 
 func (ses *Session) setMysqlThreadNoQuery(bid int, tstr, title string) error {
@@ -380,7 +379,7 @@ func (ses *Session) setMysqlResQuery(data []byte, tid, resno int) {
 	if err != nil { return }
 
 	ql := make([]string, 0, 1)
-	query :="INSERT INTO restime (thread_id,number,date) VALUES"
+	query := "INSERT INTO restime (thread_id,number,date) VALUES"
 	list := strings.Split(str, "\n")
 	for _, it := range list {
 		resno++
