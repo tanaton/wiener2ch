@@ -247,7 +247,7 @@ func (ses *Session) getBoard(nich Nich) ([]Nich, error) {
 	vect := make([]Nich, 0, 1)
 	list := strings.Split(string(data), "\n")
 	for _, it := range list {
-		if d := g_reg_dat.FindStringSubmatch(it); len(d) > 0 {
+		if d := g_reg_dat.FindStringSubmatch(it); len(d) == 3 {
 			var n Nich
 			n.server = nich.server
 			n.board = nich.board
@@ -362,19 +362,20 @@ func (ses *Session) setMysqlThreadNoQuery(bid int, tstr, title string) error {
 
 func (ses *Session) setMysqlRes(data, moto []byte, n Nich, bid int) {
 	if data == nil { return }
-	ses.getMysqlThreadNo(data, bid, n.thread)
+	tid := ses.getMysqlThreadNo(data, bid, n.thread)
+	if tid < 0 { return }
 	if moto == nil {
-		ses.setMysqlResQuery(data, n, bid, 0)
+		ses.setMysqlResQuery(data, tid, 0)
 	} else {
 		mlen := len(moto)
 		if len(data) > (mlen + 1) {
 			resno := bytes.Count(moto, []byte{'\n'})
-			ses.setMysqlResQuery(data[mlen:], n, bid, resno)
+			ses.setMysqlResQuery(data[mlen:], tid, resno)
 		}
 	}
 }
 
-func (ses *Session) setMysqlResQuery(data []byte, n Nich, bid, resno int) {
+func (ses *Session) setMysqlResQuery(data []byte, tid, resno int) {
 	str, err := sjisToUtf8(data)
 	if err != nil { return }
 
@@ -383,7 +384,7 @@ func (ses *Session) setMysqlResQuery(data []byte, n Nich, bid, resno int) {
 	list := strings.Split(str, "\n")
 	for _, it := range list {
 		resno++
-		q, err := ses.createDateQuery(n, bid, resno, it)
+		q, err := ses.createDateQuery(tid, resno, it)
 		if err == nil {
 			ql = append(ql, q)
 		}
@@ -400,9 +401,9 @@ func (ses *Session) setMysqlResQuery(data []byte, n Nich, bid, resno int) {
 	}
 }
 
-func (ses *Session) createDateQuery(n Nich, bid, resno int, line string) (str string, err error) {
+func (ses *Session) createDateQuery(tid, resno int, line string) (str string, err error) {
 	if d := g_reg_date.FindStringSubmatch(line); len(d) > 6 {
-		str = fmt.Sprintf("(%d,%s,%d,'%s%s%s%s%s%s')", bid, n.thread, resno, d[1], d[2], d[3], d[4], d[5], d[6])
+		str = fmt.Sprintf("(%d,%d,'%s%s%s%s%s%s')", tid, resno, d[1], d[2], d[3], d[4], d[5], d[6])
 	} else {
 		err = errors.New("reg error")
 	}
