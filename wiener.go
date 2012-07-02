@@ -111,7 +111,6 @@ func start(slch <-chan *map[string]string, sync chan<- *Section) {
 }
 
 func (sec *Section) mainSection(sync chan<- *Section) {
-	var db mysql.Conn
 	pch := make(chan *Packet, 4)
 	fch := make(chan bool)
 	defer func() {
@@ -123,22 +122,11 @@ func (sec *Section) mainSection(sync chan<- *Section) {
 			close(fch)
 		}
 		close(pch)
-
-		// DBクローズ
-		if db != nil {
-			db.Close()
-		}
 		sync <- sec
 	}()
 
-	if sec.dbc != nil {
-		db = mysql.New("tcp", "", fmt.Sprintf("%s:%d", sec.dbc.host, sec.dbc.port), sec.dbc.user, sec.dbc.pass, sec.dbc.name)
-		err := db.Connect()
-		if err != nil { db = nil }
-	}
-
 	for key := range sec.sl {
-		go sec.mainThread(key, db, pch, fch)
+		go sec.mainThread(key, pch, fch)
 		time.Sleep(GO_THREAD_SLEEP_TIME)
 	}
 	for {
@@ -149,14 +137,14 @@ func (sec *Section) mainSection(sync chan<- *Section) {
 			break
 		} else if checkOpen(fch) {
 			// 移転なし
-			go sec.mainThread(pack.key, db, pch, fch)
+			go sec.mainThread(pack.key, pch, fch)
 		}
 		time.Sleep(GO_THREAD_SLEEP_TIME)
 	}
 	time.Sleep(RESTART_SLEEP_TIME)
 }
 
-func (sec *Section) mainThread(key string, db mysql.Conn, pch chan *Packet, fch <-chan bool) {
+func (sec *Section) mainThread(key string, pch chan *Packet, fch <-chan bool) {
 	jmp := false
 	ses := &Session{
 		get		: get2ch.NewGet2ch(get2ch.NewFileCache(DAT_DIR)),
@@ -164,11 +152,20 @@ func (sec *Section) mainThread(key string, db mysql.Conn, pch chan *Packet, fch 
 	if sec.sc.host != "" {
 		ses.get.SetSalami(sec.sc.host, sec.sc.port)
 	}
-	ses.db = db
 
 	bl, ok := sec.sl[key]
 	if ok == false { return }
 
+	if sec.dbc != nil {
+		ses.db = mysql.New("tcp", "", fmt.Sprintf("%s:%d", sec.dbc.host, sec.dbc.port), sec.dbc.user, sec.dbc.pass, sec.dbc.name)
+		err := ses.db.Connect()
+		if err != nil {
+			ses.db = nil
+		} else {
+			// DB接続に成功した場合、閉じる予約をしておく
+			defer ses.db.Close()
+		}
+	}
 	// バーボン判定
 	sec.checkBourbon(ses.get)
 
@@ -343,7 +340,7 @@ func (ses *Session) getMysqlThreadNo(data []byte, bid int, tstr string) (tid int
 
 func (ses *Session) getMysqlThreadNoQuery(bid int, tstr string) (tid int) {
 	tid = -1
-	rows, _, err := ses.db.Query("SELECT id FROM threadlist WHERE board_id=%d AND thread=%s", bid, tstr)
+	rows, _, err := ses.db.Query("SELECT id FROM threadlist WHERE thread=%s AND board_id=%d", tstr, bid)
 	if err != nil { return }
 
 	for _, row := range rows {
