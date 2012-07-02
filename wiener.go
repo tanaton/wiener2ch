@@ -46,7 +46,7 @@ type Section struct {
 	sl			map[string][]Nich
 	bbn			bool
 	bbnLimit	time.Time
-	bbnMux		sync.Mutex
+	bbnMux		sync.RWMutex
 }
 
 type Config struct {
@@ -240,7 +240,7 @@ func (ses *Session) getBoard(nich Nich) ([]Nich, error) {
 	h := threadResList(nich, ses.get.Cache)
 	data, err := ses.get.GetData()
 	if err != nil {
-		log.Printf(err.Error() + "\n")
+		log.Printf(err.Error())
 		return nil, err
 	}
 	ses.get.GetBoardName()
@@ -273,10 +273,10 @@ func (ses *Session) getThread(tl []Nich, bid int, fch <-chan bool) bool {
 		if err != nil { moto = nil }
 		data, err := ses.get.GetData()
 		if err != nil {
-			log.Printf(err.Error() + "\n")
-			log.Printf("%s/%s/%s\n", nich.server, nich.board, nich.thread)
+			log.Printf(err.Error())
+			log.Printf("%s/%s/%s", nich.server, nich.board, nich.thread)
 		} else {
-			log.Printf("%d OK %s/%s/%s\n", ses.get.Info.GetCode(), nich.server, nich.board, nich.thread)
+			log.Printf("%d OK %s/%s/%s", ses.get.Info.GetCode(), nich.server, nich.board, nich.thread)
 			if bid >= 0 && ses.db != nil {
 				ses.setMysqlRes(data, moto, nich, bid)
 			}
@@ -393,9 +393,9 @@ func (ses *Session) setMysqlResQuery(data []byte, tid, resno int) {
 		query += strings.Join(ql, ",")
 		_, _, err := ses.db.Query(query)
 		if err != nil {
-			log.Printf("error: mysql挿入失敗\n")
+			log.Printf("error: mysql挿入失敗")
 		} else {
-			log.Printf("mysql挿入数:%d\n", l)
+			log.Printf("mysql挿入数:%d", l)
 		}
 	}
 }
