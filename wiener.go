@@ -285,31 +285,29 @@ func (ses *Session) getThread(tl []Nich, bid int, fch <-chan bool) bool {
 }
 
 func (ses *Session) getMysqlBoardNo(bname string) (bid int) {
-	var err error
 	bid = -1
 
 	if ses.db != nil {
-		bid, err = ses.getMysqlBoardNoQuery(bname)
-		if err != nil {
-			err = ses.setMysqlBoardNoQuery(bname)
+		bid = ses.getMysqlBoardNoQuery(bname)
+		if bid < 0 {
+			err := ses.setMysqlBoardNoQuery(bname)
 			if err != nil { return }
-			bid, err = ses.getMysqlBoardNoQuery(bname)
+			bid = ses.getMysqlBoardNoQuery(bname)
 		}
 	}
 	return
 }
 
-func (ses *Session) getMysqlBoardNoQuery(bname string) (int, error) {
-	bid := -1
+func (ses *Session) getMysqlBoardNoQuery(bname string) (bid int) {
+	bid = -1
 	rows, _, err := ses.db.Query("SELECT id FROM boardlist WHERE board = '%s'", bname)
-	if err != nil { return -1, err }
+	if err != nil { return }
 
 	for _, row := range rows {
 		bid = row.Int(0)
 		break
 	}
-	if bid < 0 { return -1, errors.New("board id error") }
-	return bid, nil
+	return
 }
 
 func (ses *Session) setMysqlBoardNoQuery(bname string) error {
@@ -318,7 +316,6 @@ func (ses *Session) setMysqlBoardNoQuery(bname string) error {
 }
 
 func (ses *Session) getMysqlThreadNo(data []byte, bid int, tstr string) (tid int) {
-	var err error
 	tid = -1
 
 	if ses.db != nil {
@@ -327,8 +324,7 @@ func (ses *Session) getMysqlThreadNo(data []byte, bid int, tstr string) (tid int
 			index := bytes.IndexByte(data, '\n')
 			bl := bytes.Split(data[0:index], []byte{'<','>'})
 			if len(bl) <= 4 { return }
-			var title string
-			title, err = sjisToUtf8(bl[4])
+			title, err := sjisToUtf8(bl[4])
 			if err != nil { return }
 			err = ses.setMysqlThreadNoQuery(bid, tstr, title)
 			if err != nil { return }
