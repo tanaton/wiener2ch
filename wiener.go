@@ -68,7 +68,8 @@ const (
 	DAT_DIR					= "/2ch/dat"
 	GO_THREAD_SLEEP_TIME	= 2 * time.Second
 	THREAD_SLEEP_TIME		= 4 * time.Second
-	RESTART_SLEEP_TIME		= 60 * time.Second
+	SERVER_THREAD_WAIT_TIME	= 30 * time.Second
+	RESTART_SLEEP_TIME		= 3 * time.Minute
 	SERVER_CYCLE_TIME		= 60 * time.Minute
 	BBN_LIMIT_TIME			= 10 * time.Minute
 	CONFIG_JSON_PATH_DEF	= "wiener.json"
@@ -188,7 +189,11 @@ func (sec *Section) mainThread(key string, pch chan *Packet, fch <-chan bool) {
 		// 止める
 		time.Sleep(THREAD_SLEEP_TIME)
 	}
+	// ちょっと待つ
+	time.Sleep(SERVER_THREAD_WAIT_TIME)
+
 	if checkOpen(fch) {
+		// 現在の情報を送信
 		pch <- &Packet{
 			key		: key,
 			jmp		: jmp,
