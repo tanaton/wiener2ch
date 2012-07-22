@@ -79,10 +79,14 @@ var g_reg_bbs *regexp.Regexp = regexp.MustCompile("(.+\\.2ch\\.net|.+\\.bbspink\
 var g_reg_dat *regexp.Regexp = regexp.MustCompile("^(\\d{9,10})\\.dat<>.* \\(([0-9]+)\\)$")
 var g_reg_date *regexp.Regexp = regexp.MustCompile("^.*?<>.*?<>.*?([0-9]{4})\\/([0-9]{2})\\/([0-9]{2}).*?([0-9]{2}):([0-9]{2}):([0-9]{2})")
 
-var g_filter map[string]bool = map[string]bool{
+var g_filter_server map[string]bool = map[string]bool{
 	"ipv6.2ch.net"			: true,
 	"headline.2ch.net"		: true,
 	"headline.bbspink.com"	: true,
+}
+
+var g_filter_board map[string]bool = map[string]bool{
+	"tv2chwiki"	: true,
 }
 
 func main() {
@@ -427,9 +431,8 @@ func getServer() map[string]string {
 		if d := g_reg_bbs.FindStringSubmatch(it); len(d) > 0 {
 			s := d[1]
 			b := d[2]
-			if _, ok := g_filter[s]; ok {
-				continue
-			}
+			if _, ok := g_filter_server[s]; ok { continue }
+			if _, ok := g_filter_board[b]; ok { continue }
 			bl[b] = s
 		}
 	}
