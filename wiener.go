@@ -96,12 +96,8 @@ func main() {
 	// 起動
 	start(slch, sync)
 
-	for {
-		// 処理を止める
-		sec := <-sync
-		sec.updateSection(<-slch)
-		go sec.mainSection(sync)
-	}
+	// 処理を止める
+	<-sync
 }
 
 func start(slch <-chan *map[string]string, sync chan<- *Section) {
