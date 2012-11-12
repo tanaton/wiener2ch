@@ -536,4 +536,3 @@ func (c *Config) getDataStringArray(h string, def []string) (ret []string) {
 	}
 	return
 }
-
