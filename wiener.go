@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"strings"
 	"strconv"
-	"sync"
 	"time"
 	"github.com/tanaton/get2ch-go"
 	"code.google.com/p/go-charset/charset"
@@ -45,8 +44,6 @@ type Section struct {
 	bl			[]string
 	sl			map[string][]Nich
 	bbn			bool
-	bbnLimit	time.Time
-	bbnMux		sync.RWMutex
 }
 
 type Config struct {
@@ -57,6 +54,8 @@ type Config struct {
 type Session struct {
 	db			mysql.Conn
 	get			*get2ch.Get2ch
+	bbn			bool
+	bbnLimit	time.Time
 }
 
 type Packet struct {
@@ -68,7 +67,6 @@ const (
 	DAT_DIR					= "/2ch/dat"
 	GO_THREAD_SLEEP_TIME	= 2 * time.Second
 	THREAD_SLEEP_TIME		= 4 * time.Second
-	SERVER_THREAD_WAIT_TIME	= 30 * time.Second
 	RESTART_SLEEP_TIME		= 3 * time.Minute
 	SERVER_CYCLE_TIME		= 60 * time.Minute
 	BBN_LIMIT_TIME			= 10 * time.Minute
@@ -77,7 +75,7 @@ const (
 
 var g_reg_bbs *regexp.Regexp = regexp.MustCompile("(.+\\.2ch\\.net|.+\\.bbspink\\.com)/(.+)<>")
 var g_reg_dat *regexp.Regexp = regexp.MustCompile("^(\\d{9,10})\\.dat<>.* \\(([0-9]+)\\)$")
-var g_reg_date *regexp.Regexp = regexp.MustCompile("^.*?<>.*?<>.*?([0-9]{4})\\/([0-9]{2})\\/([0-9]{2}).*?([0-9]{2}):([0-9]{2}):([0-9]{2})")
+var g_reg_title *regexp.Regexp = regexp.MustCompile("^.*?<>.*?<>.*?<>(.*?)<>(.*)")
 
 var g_filter_server map[string]bool = map[string]bool{
 	"ipv6.2ch.net"			: true,
@@ -96,8 +94,15 @@ func main() {
 	// 起動
 	start(slch, sync)
 
-	// 処理を止める
-	<-sync
+	for {
+		// 処理を止める
+		sec := <-sync
+		log.Printf("main() 鯖移転 %v", sec)
+		<-slch
+		sl := <-slch
+		sec.updateSection(sl)
+		go sec.mainSection(sync)
+	}
 }
 
 func start(slch <-chan *map[string]string, sync chan<- *Section) {
@@ -112,7 +117,7 @@ func start(slch <-chan *map[string]string, sync chan<- *Section) {
 }
 
 func (sec *Section) mainSection(sync chan<- *Section) {
-	pch := make(chan *Packet, 4)
+	pch := make(chan Packet, len(sec.sl))
 	fch := make(chan bool)
 	defer func() {
 		if r := recover(); r != nil {
@@ -132,23 +137,41 @@ func (sec *Section) mainSection(sync chan<- *Section) {
 	}
 	for {
 		pack := <-pch
-		if pack == nil || pack.jmp {
+		if pack.jmp {
 			// 鯖移転の可能性
+			log.Printf("mainSection() 鯖移転 %v", pack)
 			close(fch)
+			time.Sleep(RESTART_SLEEP_TIME)
 			break
-		} else if checkOpen(fch) {
-			// 移転なし
-			go sec.mainThread(pack.key, pch, fch)
+		} else {
+			if checkOpen(fch) {
+				// 移転なし
+				log.Printf("mainSection() 移転無し %v", pack)
+				go sec.mainThread(pack.key, pch, fch)
+			} else {
+				log.Printf("mainSection() 終了 %v", pack)
+				break
+			}
 		}
-		time.Sleep(GO_THREAD_SLEEP_TIME)
 	}
-	time.Sleep(RESTART_SLEEP_TIME)
 }
 
-func (sec *Section) mainThread(key string, pch chan *Packet, fch <-chan bool) {
+func (sec *Section) mainThread(key string, pch chan Packet, fch <-chan bool) {
 	jmp := false
+	defer func() {
+		log.Printf("mainThread() 終了 key:%s", key)
+		if checkOpen(fch) {
+			// 現在の情報を送信
+			pch <- Packet{
+				key		: key,
+				jmp		: jmp,
+			}
+		}
+	}()
+
 	ses := &Session{
 		get		: get2ch.NewGet2ch(get2ch.NewFileCache(DAT_DIR)),
+		bbn		: sec.bbn,
 	}
 	if sec.sc.host != "" {
 		ses.get.SetSalami(sec.sc.host, sec.sc.port)
@@ -161,66 +184,52 @@ func (sec *Section) mainThread(key string, pch chan *Packet, fch <-chan bool) {
 		ses.db = mysql.New("tcp", "", fmt.Sprintf("%s:%d", sec.dbc.host, sec.dbc.port), sec.dbc.user, sec.dbc.pass, sec.dbc.name)
 		err := ses.db.Connect()
 		if err != nil {
+			log.Printf("mainThread() DB接続失敗 key:%s", key)
 			ses.db = nil
 		} else {
 			// DB接続に成功した場合、閉じる予約をしておく
 			defer ses.db.Close()
 		}
 	}
-	// バーボン判定
-	sec.checkBourbon(ses.get)
-
 	for _, nich := range bl {
 		if !checkOpen(fch) { return }
 		// 板の取得
 		tl, err := ses.getBoard(nich)
 		if err == nil {
+			// バーボン判定
+			ses.checkBourbon()
 			if tl != nil && len(tl) > 0 {
-				bid := ses.getMysqlBoardNo(nich.board)
 				// スレッドの取得
-				if !ses.getThread(tl, bid, fch) { return }
+				if !ses.getThread(tl, fch) { return }
 			}
 		} else {
 			// 板が移転した可能性あり
+			log.Printf("mainThread() DB接続失敗 key:%s", key)
 			jmp = true
+			break
 		}
-		// バーボン判定
-		sec.checkBourbon(ses.get)
 		// 止める
 		time.Sleep(THREAD_SLEEP_TIME)
 	}
-	// ちょっと待つ
-	time.Sleep(SERVER_THREAD_WAIT_TIME)
-
-	if checkOpen(fch) {
-		// 現在の情報を送信
-		pch <- &Packet{
-			key		: key,
-			jmp		: jmp,
-		}
-	}
 }
 
-func (sec *Section) checkBourbon(get *get2ch.Get2ch) {
-	sec.bbnMux.Lock()
-	defer sec.bbnMux.Unlock()
-
-	if sec.bbn {
+func (ses *Session) checkBourbon() {
+	if ses.bbn {
 		// すでにバーボン
-		if time.Now().After(sec.bbnLimit) {
+		if time.Now().After(ses.bbnLimit) {
 			// バーボン解除
-			sec.bbn = false
-			get.Bourbon = false
+			ses.bbn = false
+			ses.get.Bourbon = false
 		} else {
 			// バーボン継続
-			get.Bourbon = true
+			ses.get.Bourbon = true
 		}
 	} else {
-		if get.Bourbon {
+		if ses.get.Bourbon {
 			// 新しくバーボン
-			sec.bbn = true
+			ses.bbn = true
 			// 10分後までバーボン
-			sec.bbnLimit = time.Now().Add(BBN_LIMIT_TIME)
+			ses.bbnLimit = time.Now().Add(BBN_LIMIT_TIME)
 		}
 	}
 }
@@ -266,7 +275,7 @@ func (ses *Session) getBoard(nich Nich) ([]Nich, error) {
 	return vect, nil
 }
 
-func (ses *Session) getThread(tl []Nich, bid int, fch <-chan bool) bool {
+func (ses *Session) getThread(tl []Nich, fch <-chan bool) bool {
 	for _, nich := range tl {
 		if !checkOpen(fch) { return false }
 		err := ses.get.SetRequest(nich.server, nich.board, nich.thread)
@@ -274,13 +283,15 @@ func (ses *Session) getThread(tl []Nich, bid int, fch <-chan bool) bool {
 		moto, err := ses.get.Cache.GetData(nich.server, nich.board, nich.thread)
 		if err != nil { moto = nil }
 		data, err := ses.get.GetData()
+		// バーボン判定
+		ses.checkBourbon()
 		if err != nil {
-			log.Printf(err.Error())
-			log.Printf("%s/%s/%s", nich.server, nich.board, nich.thread)
+			fmt.Printf(err.Error())
+			fmt.Printf("%s/%s/%s", nich.server, nich.board, nich.thread)
 		} else {
-			log.Printf("%d OK %s/%s/%s", ses.get.Info.GetCode(), nich.server, nich.board, nich.thread)
-			if bid >= 0 && ses.db != nil {
-				ses.setMysqlRes(data, moto, nich, bid)
+			fmt.Printf("%d OK %s/%s/%s", ses.get.Info.GetCode(), nich.server, nich.board, nich.thread)
+			if ses.db != nil && data != nil && moto == nil {
+				ses.setMysqlTitleQuery(data, nich)
 			}
 		}
 		// 4秒止める
@@ -289,118 +300,37 @@ func (ses *Session) getThread(tl []Nich, bid int, fch <-chan bool) bool {
 	return true
 }
 
-func (ses *Session) getMysqlBoardNo(bname string) (bid int) {
-	bid = -1
-
-	if ses.db != nil {
-		bid = ses.getMysqlBoardNoQuery(bname)
-		if bid < 0 {
-			err := ses.setMysqlBoardNoQuery(bname)
-			if err != nil { return }
-			bid = ses.getMysqlBoardNoQuery(bname)
-		}
-	}
-	return
-}
-
-func (ses *Session) getMysqlBoardNoQuery(bname string) (bid int) {
-	bid = -1
-	rows, _, err := ses.db.Query("SELECT id FROM boardlist WHERE board = '%s'", bname)
-	if err != nil { return }
-
-	for _, row := range rows {
-		bid = row.Int(0)
-		break
-	}
-	return
-}
-
-func (ses *Session) setMysqlBoardNoQuery(bname string) error {
-	_, _, err := ses.db.Query("INSERT INTO boardlist (board) VALUES('%s')", bname)
-	return err
-}
-
-func (ses *Session) getMysqlThreadNo(data []byte, bid int, tstr string) (tid int) {
-	tid = -1
-
-	if ses.db != nil {
-		tid = ses.getMysqlThreadNoQuery(bid, tstr)
-		if tid < 0 {
-			index := bytes.IndexByte(data, '\n')
-			bl := bytes.Split(data[0:index], []byte{'<','>'})
-			if len(bl) <= 4 { return }
-			title, err := sjisToUtf8(bl[4])
-			if err != nil { return }
-			err = ses.setMysqlThreadNoQuery(bid, tstr, title)
-			if err != nil { return }
-			tid = ses.getMysqlThreadNoQuery(bid, tstr)
-		}
-	}
-	return
-}
-
-func (ses *Session) getMysqlThreadNoQuery(bid int, tstr string) (tid int) {
-	tid = -1
-	rows, _, err := ses.db.Query("SELECT id FROM threadlist WHERE thread=%s AND board_id=%d", tstr, bid)
-	if err != nil { return }
-
-	for _, row := range rows {
-		tid = row.Int(0)
-		break
-	}
-	return
-}
-
-func (ses *Session) setMysqlThreadNoQuery(bid int, tstr, title string) error {
-	_, _, err := ses.db.Query("INSERT INTO threadlist (board_id, thread, title) VALUES(%d,%s,'%s')", bid, tstr, ses.db.EscapeString(title))
-	return err
-}
-
-
-func (ses *Session) setMysqlRes(data, moto []byte, n Nich, bid int) {
-	if data == nil { return }
-	tid := ses.getMysqlThreadNo(data, bid, n.thread)
-	if tid < 0 { return }
-	if moto == nil {
-		ses.setMysqlResQuery(data, tid, 0)
-	} else {
-		mlen := len(moto)
-		if len(data) > (mlen + 1) {
-			resno := bytes.Count(moto, []byte{'\n'})
-			ses.setMysqlResQuery(data[mlen:], tid, resno)
-		}
-	}
-}
-
-func (ses *Session) setMysqlResQuery(data []byte, tid, resno int) {
+func (ses *Session) setMysqlTitleQuery(data []byte, nich Nich) {
 	str, err := sjisToUtf8(data)
 	if err != nil { return }
 
-	ql := make([]string, 0, 1)
-	query := "INSERT INTO restime (thread_id,number,date) VALUES"
 	list := strings.Split(str, "\n")
-	for _, it := range list {
-		resno++
-		q, err := ses.createDateQuery(tid, resno, it)
+	if len(list) > 0 {
+		query, err := ses.createQuery(list[0], nich)
 		if err == nil {
-			ql = append(ql, q)
-		}
-	}
-	l := len(ql)
-	if l > 0 {
-		query += strings.Join(ql, ",")
-		_, _, err := ses.db.Query(query)
-		if err != nil {
-			log.Printf("error: mysql挿入失敗")
-		} else {
-			log.Printf("mysql挿入数:%d", l)
+			_, _, err := ses.db.Query(query)
+			if err == nil {
+				fmt.Printf("mysql挿入成功")
+			} else {
+				fmt.Printf("mysql挿入失敗")
+			}
 		}
 	}
 }
 
-func (ses *Session) createDateQuery(tid, resno int, line string) (str string, err error) {
-	if d := g_reg_date.FindStringSubmatch(line); len(d) > 6 {
-		str = fmt.Sprintf("(%d,%d,'%s%s%s%s%s%s')", tid, resno, d[1], d[2], d[3], d[4], d[5], d[6])
+func (ses *Session) createQuery(line string, nich Nich) (str string, err error) {
+	if title := g_reg_title.FindStringSubmatch(line); len(title) > 2 {
+		l := len(title[1])
+		if l > 100 {
+			l = 100
+		}
+		master := title[1][:l]
+		str = fmt.Sprintf(
+			"INSERT INTO thread_title (board,number,title,master) VALUES('%s',%s,'%s','%s')",
+			nich.board,
+			nich.thread,
+			ses.db.EscapeString(title[2]),
+			ses.db.EscapeString(master))
 	} else {
 		err = errors.New("reg error")
 	}
