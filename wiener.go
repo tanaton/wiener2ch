@@ -286,10 +286,10 @@ func (ses *Session) getThread(tl []Nich, fch <-chan bool) bool {
 		// バーボン判定
 		ses.checkBourbon()
 		if err != nil {
-			fmt.Printf(err.Error())
-			fmt.Printf("%s/%s/%s", nich.server, nich.board, nich.thread)
+			fmt.Fprintf(os.Stdout, err.Error())
+			fmt.Fprintf(os.Stdout, "%s/%s/%s", nich.server, nich.board, nich.thread)
 		} else {
-			fmt.Printf("%d OK %s/%s/%s", ses.get.Info.GetCode(), nich.server, nich.board, nich.thread)
+			fmt.Fprintf(os.Stdout, "%d OK %s/%s/%s", ses.get.Info.GetCode(), nich.server, nich.board, nich.thread)
 			if ses.db != nil && data != nil && moto == nil {
 				ses.setMysqlTitleQuery(data, nich)
 			}
@@ -310,9 +310,9 @@ func (ses *Session) setMysqlTitleQuery(data []byte, nich Nich) {
 		if err == nil {
 			_, _, err := ses.db.Query(query)
 			if err == nil {
-				fmt.Printf("mysql挿入成功")
+				fmt.Fprintf(os.Stdout, "mysql挿入成功")
 			} else {
-				fmt.Printf("mysql挿入失敗")
+				fmt.Fprintf(os.Stdout, "mysql挿入失敗")
 			}
 		}
 	}
