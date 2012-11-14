@@ -78,6 +78,7 @@ var stdlog *log.Logger = log.New(os.Stdout, "", log.LstdFlags)
 var g_reg_bbs *regexp.Regexp = regexp.MustCompile("(.+\\.2ch\\.net|.+\\.bbspink\\.com)/(.+)<>")
 var g_reg_dat *regexp.Regexp = regexp.MustCompile("^(\\d{9,10})\\.dat<>.* \\(([0-9]+)\\)$")
 var g_reg_title *regexp.Regexp = regexp.MustCompile("^.*?<>.*?<>.*?<>(.*?)<>(.*)")
+var g_reg_tag *regexp.Regexp = regexp.MustCompile("<\\/?[^>]*>")
 
 var g_filter_server map[string]bool = map[string]bool{
 	"ipv6.2ch.net"			: true,
@@ -332,7 +333,7 @@ func (ses *Session) createQuery(line string, nich Nich) (str string, err error) 
 			nich.board,
 			nich.thread,
 			ses.db.EscapeString(title[2]),
-			ses.db.EscapeString(master))
+			ses.db.EscapeString(g_reg_tag.ReplaceAllString(master, "")))
 	} else {
 		err = errors.New("reg error")
 	}
