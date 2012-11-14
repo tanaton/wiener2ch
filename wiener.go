@@ -73,6 +73,8 @@ const (
 	CONFIG_JSON_PATH_DEF	= "wiener.json"
 )
 
+var stdlog *log.Logger = log.New(os.Stdout, "", log.LstdFlags)
+
 var g_reg_bbs *regexp.Regexp = regexp.MustCompile("(.+\\.2ch\\.net|.+\\.bbspink\\.com)/(.+)<>")
 var g_reg_dat *regexp.Regexp = regexp.MustCompile("^(\\d{9,10})\\.dat<>.* \\(([0-9]+)\\)$")
 var g_reg_title *regexp.Regexp = regexp.MustCompile("^.*?<>.*?<>.*?<>(.*?)<>(.*)")
@@ -286,10 +288,10 @@ func (ses *Session) getThread(tl []Nich, fch <-chan bool) bool {
 		// バーボン判定
 		ses.checkBourbon()
 		if err != nil {
-			fmt.Fprintf(os.Stdout, err.Error())
-			fmt.Fprintf(os.Stdout, "%s/%s/%s", nich.server, nich.board, nich.thread)
+			stdlog.Printf(err.Error())
+			stdlog.Printf("%s/%s/%s", nich.server, nich.board, nich.thread)
 		} else {
-			fmt.Fprintf(os.Stdout, "%d OK %s/%s/%s", ses.get.Info.GetCode(), nich.server, nich.board, nich.thread)
+			stdlog.Printf("%d OK %s/%s/%s", ses.get.Info.GetCode(), nich.server, nich.board, nich.thread)
 			if ses.db != nil && data != nil && moto == nil {
 				ses.setMysqlTitleQuery(data, nich)
 			}
@@ -310,9 +312,9 @@ func (ses *Session) setMysqlTitleQuery(data []byte, nich Nich) {
 		if err == nil {
 			_, _, err := ses.db.Query(query)
 			if err == nil {
-				fmt.Fprintf(os.Stdout, "mysql挿入成功")
+				stdlog.Printf("mysql挿入成功")
 			} else {
-				fmt.Fprintf(os.Stdout, "mysql挿入失敗")
+				stdlog.Printf("mysql挿入失敗")
 			}
 		}
 	}
