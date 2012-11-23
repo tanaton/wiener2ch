@@ -326,20 +326,25 @@ func (ses *Session) createQuery(line string, nich Nich) (str string, err error) 
 	if title := g_reg_title.FindStringSubmatch(line); len(title) > 2 {
 		master := g_reg_tag.ReplaceAllString(title[1], "")	// tag
 		master = g_reg_url.ReplaceAllString(master, "")		// url
-		l := len(master)
-		if l > 100 {
-			l = 100
-		}
 		str = fmt.Sprintf(
 			"INSERT INTO thread_title (board,number,title,master) VALUES('%s',%s,'%s','%s')",
 			nich.board,
 			nich.thread,
 			ses.db.EscapeString(title[2]),
-			ses.db.EscapeString(master[:l]))
+			ses.db.EscapeString(utf8Substr(master, 100)))
 	} else {
 		err = errors.New("reg error")
 	}
 	return
+}
+
+func utf8Substr(s string, max int) string {
+	r := []rune(s)
+	l := len(r)
+	if l > max {
+		l = max
+	}
+	return string(r[:l])
 }
 
 func sjisToUtf8(data []byte) (string, error) {
