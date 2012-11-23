@@ -79,6 +79,7 @@ var g_reg_bbs *regexp.Regexp = regexp.MustCompile("(.+\\.2ch\\.net|.+\\.bbspink\
 var g_reg_dat *regexp.Regexp = regexp.MustCompile("^(\\d{9,10})\\.dat<>.* \\(([0-9]+)\\)$")
 var g_reg_title *regexp.Regexp = regexp.MustCompile("^.*?<>.*?<>.*?<>(.*?)<>(.*)")
 var g_reg_tag *regexp.Regexp = regexp.MustCompile("<\\/?[^>]*>")
+var g_reg_url *regexp.Regexp = regexp.MustCompile("(?:s?h?ttps?|sssp):\\/\\/[-_.!~*'()\\w;\\/?:\\@&=+\\$,%#\\|]+")
 
 var g_filter_server map[string]bool = map[string]bool{
 	"ipv6.2ch.net"			: true,
@@ -323,17 +324,18 @@ func (ses *Session) setMysqlTitleQuery(data []byte, nich Nich) {
 
 func (ses *Session) createQuery(line string, nich Nich) (str string, err error) {
 	if title := g_reg_title.FindStringSubmatch(line); len(title) > 2 {
-		l := len(title[1])
+		master := g_reg_tag.ReplaceAllString(title[1], "")	// tag
+		master = g_reg_url.ReplaceAllString(master, "")		// url
+		l := len(master)
 		if l > 100 {
 			l = 100
 		}
-		master := title[1][:l]
 		str = fmt.Sprintf(
 			"INSERT INTO thread_title (board,number,title,master) VALUES('%s',%s,'%s','%s')",
 			nich.board,
 			nich.thread,
 			ses.db.EscapeString(title[2]),
-			ses.db.EscapeString(g_reg_tag.ReplaceAllString(master, "")))
+			ses.db.EscapeString(master[:l]))
 	} else {
 		err = errors.New("reg error")
 	}
