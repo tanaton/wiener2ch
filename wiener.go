@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"strconv"
 	"time"
@@ -20,9 +21,14 @@ import (
 )
 
 type Nich struct {
-	server		string
-	board		string
-	thread		string
+	Server			string
+	Board			string
+	Thread			string
+	ThreadNumber	int
+}
+type Nichs []*Nich
+type NichsByThreadSince struct {
+	Nichs
 }
 
 type DataBase struct {
@@ -42,7 +48,7 @@ type Section struct {
 	sc			SalamiConfig
 	dbc			*DataBase
 	bl			[]string
-	sl			map[string][]Nich
+	sl			map[string]Nichs
 	bbn			bool
 }
 
@@ -89,6 +95,13 @@ var g_filter_server map[string]bool = map[string]bool{
 
 var g_filter_board map[string]bool = map[string]bool{
 	"tv2chwiki"	: true,
+}
+
+func (n Nichs) Len() int { return len(n) }
+func (n Nichs) Swap(i, j int) { n[i], n[j] = n[j], n[i] }
+func (ts NichsByThreadSince) Less(i, j int) bool {
+	// 降順
+	return ts.Nichs[i].ThreadNumber > ts.Nichs[j].ThreadNumber
 }
 
 func main() {
@@ -249,8 +262,8 @@ func checkOpen(ch <-chan bool) bool {
 	return true
 }
 
-func (ses *Session) getBoard(nich Nich) ([]Nich, error) {
-	err := ses.get.SetRequest(nich.server, nich.board, "")
+func (ses *Session) getBoard(nich *Nich) (Nichs, error) {
+	err := ses.get.SetRequest(nich.Server, nich.Board, "")
 	if err != nil { return nil, err }
 	h := threadResList(nich, ses.get.Cache)
 	data, err := ses.get.GetData()
@@ -259,14 +272,19 @@ func (ses *Session) getBoard(nich Nich) ([]Nich, error) {
 		return nil, err
 	}
 	ses.get.GetBoardName()
-	vect := make([]Nich, 0, 1)
+	vect := make(Nichs, 0, 1)
 	list := strings.Split(string(data), "\n")
 	for _, it := range list {
 		if d := g_reg_dat.FindStringSubmatch(it); len(d) == 3 {
-			var n Nich
-			n.server = nich.server
-			n.board = nich.board
-			n.thread = d[1]
+			n := &Nich{
+				Server	: nich.Server,
+				Board	: nich.Board,
+				Thread	: d[1],
+			}
+			if tnum, err := strconv.Atoi(n.Thread); err == nil {
+				// 数字に変換
+				n.ThreadNumber = tnum
+			}
 			if m, ok := h[d[1]]; ok {
 				if j, err := strconv.Atoi(d[2]); err == nil && j > m {
 					vect = append(vect, n)
@@ -276,24 +294,27 @@ func (ses *Session) getBoard(nich Nich) ([]Nich, error) {
 			}
 		}
 	}
+	if len(vect) > 1 {
+		sort.Sort(NichsByThreadSince{vect})
+	}
 	return vect, nil
 }
 
-func (ses *Session) getThread(tl []Nich, fch <-chan bool) bool {
+func (ses *Session) getThread(tl Nichs, fch <-chan bool) bool {
 	for _, nich := range tl {
 		if !checkOpen(fch) { return false }
-		err := ses.get.SetRequest(nich.server, nich.board, nich.thread)
+		err := ses.get.SetRequest(nich.Server, nich.Board, nich.Thread)
 		if err != nil { continue }
-		moto, err := ses.get.Cache.GetData(nich.server, nich.board, nich.thread)
+		moto, err := ses.get.Cache.GetData(nich.Server, nich.Board, nich.Thread)
 		if err != nil { moto = nil }
 		data, err := ses.get.GetData()
 		// バーボン判定
 		ses.checkBourbon()
 		if err != nil {
 			stdlog.Printf(err.Error())
-			stdlog.Printf("%s/%s/%s", nich.server, nich.board, nich.thread)
+			stdlog.Printf("%s/%s/%s", nich.Server, nich.Board, nich.Thread)
 		} else {
-			stdlog.Printf("%d OK %s/%s/%s", ses.get.Info.GetCode(), nich.server, nich.board, nich.thread)
+			stdlog.Printf("%d OK %s/%s/%s", ses.get.Info.GetCode(), nich.Server, nich.Board, nich.Thread)
 			if ses.db != nil && data != nil && moto == nil {
 				ses.setMysqlTitleQuery(data, nich)
 			}
@@ -304,7 +325,7 @@ func (ses *Session) getThread(tl []Nich, fch <-chan bool) bool {
 	return true
 }
 
-func (ses *Session) setMysqlTitleQuery(data []byte, nich Nich) {
+func (ses *Session) setMysqlTitleQuery(data []byte, nich *Nich) {
 	str, err := sjisToUtf8(data)
 	if err != nil { return }
 
@@ -322,14 +343,14 @@ func (ses *Session) setMysqlTitleQuery(data []byte, nich Nich) {
 	}
 }
 
-func (ses *Session) createQuery(line string, nich Nich) (str string, err error) {
+func (ses *Session) createQuery(line string, nich *Nich) (str string, err error) {
 	if title := g_reg_title.FindStringSubmatch(line); len(title) > 2 {
 		master := g_reg_tag.ReplaceAllString(title[1], "")	// tag
 		master = g_reg_url.ReplaceAllString(master, "")		// url
 		str = fmt.Sprintf(
 			"INSERT INTO thread_title (board,number,title,master) VALUES('%s',%s,'%s','%s')",
-			nich.board,
-			nich.thread,
+			nich.Board,
+			nich.Thread,
 			ses.db.EscapeString(title[2]),
 			ses.db.EscapeString(utf8Substr(master, 100)))
 	} else {
@@ -393,24 +414,25 @@ func getServerCh() <-chan *map[string]string {
 }
 
 func (sec *Section) updateSection(sl *map[string]string) {
-	var nich Nich
-	sec.sl = make(map[string][]Nich)
+	sec.sl = make(map[string]Nichs)
 	for _, board := range sec.bl {
 		if server, ok := (*sl)[board]; ok {
-			nich.server = server
-			nich.board = board
+			n := &Nich{
+				Server	: server,
+				Board	: board,
+			}
 			if it, ok2 := sec.sl[server]; ok2 {
-				sec.sl[server] = append(it, nich)
+				sec.sl[server] = append(it, n)
 			} else {
-				sec.sl[server] = append(make([]Nich, 0, 1), nich)
+				sec.sl[server] = append(make(Nichs, 0, 1), n)
 			}
 		}
 	}
 }
 
-func threadResList(nich Nich, cache get2ch.Cache) map[string]int {
+func threadResList(nich *Nich, cache get2ch.Cache) map[string]int {
 	h := make(map[string]int)
-	data, err := cache.GetData(nich.server, nich.board, "")
+	data, err := cache.GetData(nich.Server, nich.Board, "")
 	if err != nil { return h }
 	list := strings.Split(string(data), "\n")
 	for _, it := range list {
