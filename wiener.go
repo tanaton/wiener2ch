@@ -122,7 +122,7 @@ func main() {
 	}
 }
 
-func start(slch <-chan *map[string]string, sync chan<- *Section) {
+func start(slch <-chan map[string]string, sync chan<- *Section) {
 	sl := <-slch
 	seclist := readConfig(sl)
 	// メイン処理
@@ -396,8 +396,8 @@ func getServer() map[string]string {
 	return bl
 }
 
-func getServerCh() <-chan *map[string]string {
-	ch := make(chan *map[string]string, 4)
+func getServerCh() <-chan map[string]string {
+	ch := make(chan map[string]string, 4)
 	go func() {
 		tch := time.Tick(SERVER_CYCLE_TIME)
 		sl := getServer()
@@ -406,17 +406,17 @@ func getServerCh() <-chan *map[string]string {
 			case <-tch:
 				sl = getServer()
 			default:
-				ch <- &sl
+				ch <- sl
 			}
 		}
 	}()
 	return ch
 }
 
-func (sec *Section) updateSection(sl *map[string]string) {
+func (sec *Section) updateSection(sl map[string]string) {
 	sec.sl = make(map[string]Nichs)
 	for _, board := range sec.bl {
-		if server, ok := (*sl)[board]; ok {
+		if server, ok := sl[board]; ok {
 			n := &Nich{
 				Server	: server,
 				Board	: board,
@@ -445,7 +445,7 @@ func threadResList(nich *Nich, cache get2ch.Cache) map[string]int {
 	return h
 }
 
-func readConfig(sl *map[string]string) []*Section {
+func readConfig(sl map[string]string) []*Section {
 	c := &Config{v: make(map[string]interface{})}
 	argc := len(os.Args)
 	var path string
@@ -458,7 +458,7 @@ func readConfig(sl *map[string]string) []*Section {
 	return c.section
 }
 
-func (c *Config) read(filename string, sl *map[string]string) {
+func (c *Config) read(filename string, sl map[string]string) {
 	data, err := ioutil.ReadFile(filename)
 	if err != nil { return }
 	err = json.Unmarshal(data, &c.v)
@@ -499,7 +499,7 @@ func (c *Config) read(filename string, sl *map[string]string) {
 		}
 	}
 	bl := make([]string, 0, 1)
-	for b, _ := range *sl {
+	for b, _ := range sl {
 		if _, ok := m[b]; ok == false {
 			// 設定ファイルに記載の無い板だった場合
 			bl = append(bl, b)
