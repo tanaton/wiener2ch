@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math"
 	"os"
 	"regexp"
 	"sort"
@@ -281,16 +282,18 @@ func (ses *Session) getBoard(nich *Nich) (Nichs, error) {
 				Board	: nich.Board,
 				Thread	: d[1],
 			}
-			if tnum, err := strconv.Atoi(n.Thread); err == nil {
+			tnum, converr := strconv.ParseInt(n.Thread, 10, 64)
+			if (converr == nil) && (tnum >= 0) && (tnum <= math.MaxInt32) {
+				// intの範囲を超えるスレッドは扱わない
 				// 数字に変換
-				n.ThreadNumber = tnum
-			}
-			if m, ok := h[d[1]]; ok {
-				if j, err := strconv.Atoi(d[2]); err == nil && j > m {
+				n.ThreadNumber = int(tnum)
+				if m, ok := h[n.Thread]; ok {
+					if j, err := strconv.Atoi(d[2]); err == nil && j > m {
+						vect = append(vect, n)
+					}
+				} else {
 					vect = append(vect, n)
 				}
-			} else {
-				vect = append(vect, n)
 			}
 		}
 	}
