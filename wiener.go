@@ -314,13 +314,20 @@ func (ses *Session) getThread(tl Nichs, fch <-chan bool) bool {
 		// バーボン判定
 		ses.checkBourbon()
 		if err != nil {
-			stdlog.Printf(err.Error())
-			stdlog.Printf("%s/%s/%s", nich.Server, nich.Board, nich.Thread)
+			stdlog.Printf("Path:%s/%s/%s\tMessage:%s", nich.Server, nich.Board, nich.Thread, err.Error())
 		} else {
-			stdlog.Printf("%d OK %s/%s/%s", ses.get.Info.GetCode(), nich.Server, nich.Board, nich.Thread)
-			if ses.db != nil && data != nil && moto == nil {
-				ses.setMysqlTitleQuery(data, nich)
+			code := ses.get.Info.GetCode()
+			ret := ""
+			if ses.db != nil && data != nil {
+				if moto == nil {
+					// 初回取得時
+					ret = ses.setMysqlTitleQuery(data, nich)
+				} else if code / 100 == 2 {
+					// HTTP Code 200くらい
+					ret = ses.setMysqlResQuery(data, nich)
+				}
 			}
+			stdlog.Printf("Code:%d\tPath:%s/%s/%s\tMessage:%s", code, nich.Server, nich.Board, nich.Thread, ret)
 		}
 		// 4秒止める
 		time.Sleep(THREAD_SLEEP_TIME)
@@ -328,36 +335,64 @@ func (ses *Session) getThread(tl Nichs, fch <-chan bool) bool {
 	return true
 }
 
-func (ses *Session) setMysqlTitleQuery(data []byte, nich *Nich) {
+func (ses *Session) setMysqlTitleQuery(data []byte, nich *Nich) (ret string) {
+	ret = "error"
 	str, err := sjisToUtf8(data)
-	if err != nil { return }
+	if err != nil {
+		ret = err.Error()
+		return
+	}
 
 	list := strings.Split(str, "\n")
+	linecount := strings.Count(str, "\n")
 	if len(list) > 0 {
-		query, err := ses.createQuery(list[0], nich)
+		query, err := ses.createTitleQuery(list[0], linecount, nich)
 		if err == nil {
 			_, _, err := ses.db.Query(query)
 			if err == nil {
-				stdlog.Printf("mysql挿入成功")
+				ret = "insert"
 			} else {
-				stdlog.Printf("mysql挿入失敗")
+				ret = err.Error()
 			}
+		} else {
+			ret = err.Error()
 		}
 	}
+	return
 }
 
-func (ses *Session) createQuery(line string, nich *Nich) (str string, err error) {
+func (ses *Session) createTitleQuery(line string, linecount int, nich *Nich) (str string, err error) {
 	if title := g_reg_title.FindStringSubmatch(line); len(title) > 2 {
 		master := g_reg_tag.ReplaceAllString(title[1], "")	// tag
 		master = g_reg_url.ReplaceAllString(master, "")		// url
 		str = fmt.Sprintf(
-			"INSERT INTO thread_title (board,number,title,master) VALUES('%s',%s,'%s','%s')",
+			"INSERT INTO thread_title (board,number,title,master,resnum) VALUES('%s',%s,'%s','%s',%d)",
 			nich.Board,
 			nich.Thread,
 			ses.db.EscapeString(title[2]),
-			ses.db.EscapeString(utf8Substr(master, 100)))
+			ses.db.EscapeString(utf8Substr(master, 100)),
+			linecount)
 	} else {
 		err = errors.New("reg error")
+	}
+	return
+}
+
+func (ses *Session) setMysqlResQuery(data []byte, nich *Nich) (ret string) {
+	ret = "error"
+	linecount := bytes.Count(data, []byte{'\n'})
+	if linecount > 1 {
+		query := fmt.Sprintf(
+			"UPDATE thread_title SET resnum=%d WHERE board='%s' AND number=%s",
+			linecount,
+			nich.Board,
+			nich.Thread)
+		_, _, err := ses.db.Query(query)
+		if err == nil {
+			ret = "update"
+		} else {
+			ret = err.Error()
+		}
 	}
 	return
 }
