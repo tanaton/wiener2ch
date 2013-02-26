@@ -26,6 +26,7 @@ type Nich struct {
 	Board			string
 	Thread			string
 	ThreadNumber	int
+	ResNew			int
 }
 type Nichs []*Nich
 type NichsByThreadSince struct {
@@ -266,7 +267,6 @@ func checkOpen(ch <-chan bool) bool {
 func (ses *Session) getBoard(nich *Nich) (Nichs, error) {
 	err := ses.get.SetRequest(nich.Server, nich.Board, "")
 	if err != nil { return nil, err }
-	h := threadResList(nich, ses.get.Cache)
 	data, err := ses.get.GetData()
 	if err != nil {
 		log.Printf(err.Error())
@@ -278,22 +278,20 @@ func (ses *Session) getBoard(nich *Nich) (Nichs, error) {
 	for _, it := range list {
 		if d := g_reg_dat.FindStringSubmatch(it); len(d) == 3 {
 			n := &Nich{
-				Server	: nich.Server,
-				Board	: nich.Board,
-				Thread	: d[1],
+				Server			: nich.Server,
+				Board			: nich.Board,
+				Thread			: d[1],
+				ThreadNumber	: 0,
+				ResNew			: 0,
 			}
 			tnum, converr := strconv.ParseInt(n.Thread, 10, 64)
 			if (converr == nil) && (tnum >= 0) && (tnum <= math.MaxInt32) {
 				// intの範囲を超えるスレッドは扱わない
-				// 数字に変換
 				n.ThreadNumber = int(tnum)
-				if m, ok := h[n.Thread]; ok {
-					if j, err := strconv.Atoi(d[2]); err == nil && j > m {
-						vect = append(vect, n)
-					}
-				} else {
-					vect = append(vect, n)
+				if i, err := strconv.Atoi(d[2]); err == nil {
+					n.ResNew = i
 				}
+				vect = append(vect, n)
 			}
 		}
 	}
@@ -310,6 +308,13 @@ func (ses *Session) getThread(tl Nichs, fch <-chan bool) bool {
 		if err != nil { continue }
 		moto, err := ses.get.Cache.GetData(nich.Server, nich.Board, nich.Thread)
 		if err != nil { moto = nil }
+		if moto != nil {
+			if bytes.Count(moto, []byte{'\n'}) >= nich.ResNew {
+				// すでに取得済みの場合
+				continue
+			}
+		}
+		// 読みに行く
 		data, err := ses.get.GetData()
 		// バーボン判定
 		ses.checkBourbon()
@@ -466,21 +471,6 @@ func (sec *Section) updateSection(sl map[string]string) {
 			}
 		}
 	}
-}
-
-func threadResList(nich *Nich, cache get2ch.Cache) map[string]int {
-	h := make(map[string]int)
-	data, err := cache.GetData(nich.Server, nich.Board, "")
-	if err != nil { return h }
-	list := strings.Split(string(data), "\n")
-	for _, it := range list {
-		if d := g_reg_dat.FindStringSubmatch(it); len(d) == 3 {
-			if m, err := strconv.Atoi(d[2]); err == nil {
-				h[d[1]] = m
-			}
-		}
-	}
-	return h
 }
 
 func readConfig(sl map[string]string) []*Section {
