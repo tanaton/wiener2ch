@@ -267,6 +267,9 @@ func checkOpen(ch <-chan bool) bool {
 func (ses *Session) getBoard(nich *Nich) (Nichs, error) {
 	err := ses.get.SetRequest(nich.Server, nich.Board, "")
 	if err != nil { return nil, err }
+	// キャッシュのスレッド一覧からレス数を取得
+	h := threadResList(nich, ses.get.Cache)
+	// 今のスレッド一覧を取得
 	data, err := ses.get.GetData()
 	if err != nil {
 		log.Printf(err.Error())
@@ -290,8 +293,16 @@ func (ses *Session) getBoard(nich *Nich) (Nichs, error) {
 				n.ThreadNumber = int(tnum)
 				if i, err := strconv.Atoi(d[2]); err == nil {
 					n.ResNew = i
+					if j, ok := h[n.Thread]; ok {
+						if i > j {
+							// スレッドが更新されている
+							vect = append(vect, n)
+						}
+					} else {
+						// 取得していないスレッド
+						vect = append(vect, n)
+					}
 				}
-				vect = append(vect, n)
 			}
 		}
 	}
@@ -471,6 +482,21 @@ func (sec *Section) updateSection(sl map[string]string) {
 			}
 		}
 	}
+}
+
+func threadResList(nich *Nich, cache get2ch.Cache) map[string]int {
+	h := make(map[string]int)
+	data, err := cache.GetData(nich.Server, nich.Board, "")
+	if err != nil { return h }
+	list := strings.Split(string(data), "\n")
+	for _, it := range list {
+		if d := g_reg_dat.FindStringSubmatch(it); len(d) == 3 {
+			if m, err := strconv.Atoi(d[2]); err == nil {
+				h[d[1]] = m
+			}
+		}
+	}
+	return h
 }
 
 func readConfig(sl map[string]string) []*Section {
