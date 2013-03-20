@@ -284,7 +284,7 @@ func (ses *Session) getBoard(nich *Nich) (Nichs, error) {
 		return nil, err
 	}
 	ses.get.GetBoardName()
-	vect := make(Nichs, 0, 1)
+	vect := Nichs{}
 	list := strings.Split(string(data), "\n")
 	for _, it := range list {
 		if d := g_reg_dat.FindStringSubmatch(it); len(d) == 3 {
@@ -500,7 +500,9 @@ func (sec *Section) updateSection(sl map[string]string) {
 			if it, ok2 := sec.sl[server]; ok2 {
 				sec.sl[server] = append(it, n)
 			} else {
-				sec.sl[server] = append(make(Nichs, 0, 1), n)
+				sec.sl[server] = Nichs{
+					n,
+				}
 			}
 		}
 	}
@@ -556,7 +558,7 @@ func (c *Config) read(filename string, sl map[string]string) {
 		dbc.name = c.getDataString("DBName", "test")
 	}
 
-	c.section = make([]*Section, 0, 1)
+	c.section = []*Section{}
 	m := make(map[string]bool)
 	l := c.getDataArray("SectionList", nil)
 	if l != nil {
@@ -580,7 +582,7 @@ func (c *Config) read(filename string, sl map[string]string) {
 			}
 		}
 	}
-	bl := make([]string, 0, 1)
+	bl := []string{}
 	for b, _ := range sl {
 		if _, ok := m[b]; ok == false {
 			// 設定ファイルに記載の無い板だった場合
@@ -638,7 +640,7 @@ func (c *Config) getDataStringArray(h string, def []string) (ret []string) {
 
 	ret = def
 	if sil != nil {
-		ret = make([]string, 0, 1)
+		ret = []string{}
 		for _, it := range sil {
 			if s, ok := it.(string); ok {
 				ret = append(ret, s)
