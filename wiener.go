@@ -2,31 +2,31 @@ package main
 
 import (
 	"bytes"
+	"code.google.com/p/go-charset/charset"
+	_ "code.google.com/p/go-charset/data"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/tanaton/get2ch-go"
+	"github.com/ziutek/mymysql/mysql"
+	_ "github.com/ziutek/mymysql/thrsafe"
 	"io/ioutil"
 	"log"
 	"math"
 	"os"
 	"regexp"
 	"sort"
-	"strings"
 	"strconv"
+	"strings"
 	"time"
-	"github.com/tanaton/get2ch-go"
-	"code.google.com/p/go-charset/charset"
-	_ "code.google.com/p/go-charset/data"
-	"github.com/ziutek/mymysql/mysql"
-	_ "github.com/ziutek/mymysql/thrsafe"
 )
 
 type Nich struct {
-	Server			string
-	Board			string
-	Thread			string
-	ThreadNumber	int
-	ResNew			int
+	Server       string
+	Board        string
+	Thread       string
+	ThreadNumber int
+	ResNew       int
 }
 type Nichs []*Nich
 type NichsByThreadSince struct {
@@ -34,51 +34,51 @@ type NichsByThreadSince struct {
 }
 
 type DataBase struct {
-	host		string
-	port		int
-	user		string
-	pass		string
-	name		string
+	host string
+	port int
+	user string
+	pass string
+	name string
 }
 
 type SalamiConfig struct {
-	host		string
-	port		int
+	host string
+	port int
 }
 
 type Section struct {
-	sc			SalamiConfig
-	dbc			*DataBase
-	bl			[]string
-	sl			map[string]Nichs
-	bbn			bool
+	sc  SalamiConfig
+	dbc *DataBase
+	bl  []string
+	sl  map[string]Nichs
+	bbn bool
 }
 
 type Config struct {
-	v			map[string]interface{}
-	section		[]*Section
+	v       map[string]interface{}
+	section []*Section
 }
 
 type Session struct {
-	db			mysql.Conn
-	get			*get2ch.Get2ch
-	bbn			bool
-	bbnLimit	time.Time
+	db       mysql.Conn
+	get      *get2ch.Get2ch
+	bbn      bool
+	bbnLimit time.Time
 }
 
 type Packet struct {
-	key			string
-	jmp			bool
+	key string
+	jmp bool
 }
 
 const (
-	DAT_DIR					= "/2ch/dat"
-	GO_THREAD_SLEEP_TIME	= 2 * time.Second
-	THREAD_SLEEP_TIME		= 4 * time.Second
-	RESTART_SLEEP_TIME		= 3 * time.Minute
-	SERVER_CYCLE_TIME		= 60 * time.Minute
-	BBN_LIMIT_TIME			= 10 * time.Minute
-	CONFIG_JSON_PATH_DEF	= "wiener.json"
+	DAT_DIR              = "/2ch/dat"
+	GO_THREAD_SLEEP_TIME = 2 * time.Second
+	THREAD_SLEEP_TIME    = 4 * time.Second
+	RESTART_SLEEP_TIME   = 3 * time.Minute
+	SERVER_CYCLE_TIME    = 60 * time.Minute
+	BBN_LIMIT_TIME       = 10 * time.Minute
+	CONFIG_JSON_PATH_DEF = "wiener.json"
 )
 
 var stdlog *log.Logger = log.New(os.Stdout, "", log.LstdFlags)
@@ -90,16 +90,16 @@ var g_reg_tag *regexp.Regexp = regexp.MustCompile("<\\/?[^>]*>")
 var g_reg_url *regexp.Regexp = regexp.MustCompile("(?:s?h?ttps?|sssp):\\/\\/[-_.!~*'()\\w;\\/?:\\@&=+\\$,%#\\|]+")
 
 var g_filter_server map[string]bool = map[string]bool{
-	"ipv6.2ch.net"			: true,
-	"headline.2ch.net"		: true,
-	"headline.bbspink.com"	: true,
+	"ipv6.2ch.net":         true,
+	"headline.2ch.net":     true,
+	"headline.bbspink.com": true,
 }
 
 var g_filter_board map[string]bool = map[string]bool{
-	"tv2chwiki"	: true,
+	"tv2chwiki": true,
 }
 
-func (n Nichs) Len() int { return len(n) }
+func (n Nichs) Len() int      { return len(n) }
 func (n Nichs) Swap(i, j int) { n[i], n[j] = n[j], n[i] }
 func (ts NichsByThreadSince) Less(i, j int) bool {
 	// 降順
@@ -182,22 +182,24 @@ func (sec *Section) mainThread(key string, pch chan Packet, fch <-chan bool) {
 		if checkOpen(fch) {
 			// 現在の情報を送信
 			pch <- Packet{
-				key		: key,
-				jmp		: jmp,
+				key: key,
+				jmp: jmp,
 			}
 		}
 	}()
 
 	ses := &Session{
-		get		: get2ch.NewGet2ch(get2ch.NewFileCache(DAT_DIR)),
-		bbn		: sec.bbn,
+		get: get2ch.NewGet2ch(get2ch.NewFileCache(DAT_DIR)),
+		bbn: sec.bbn,
 	}
 	if sec.sc.host != "" {
 		ses.get.SetSalami(sec.sc.host, sec.sc.port)
 	}
 
 	bl, ok := sec.sl[key]
-	if ok == false { return }
+	if ok == false {
+		return
+	}
 
 	if sec.dbc != nil {
 		ses.db = mysql.New("tcp", "", fmt.Sprintf("%s:%d", sec.dbc.host, sec.dbc.port), sec.dbc.user, sec.dbc.pass, sec.dbc.name)
@@ -211,7 +213,9 @@ func (sec *Section) mainThread(key string, pch chan Packet, fch <-chan bool) {
 		}
 	}
 	for _, nich := range bl {
-		if !checkOpen(fch) { return }
+		if !checkOpen(fch) {
+			return
+		}
 		// 板の取得
 		tl, err := ses.getBoard(nich)
 		if err == nil {
@@ -219,7 +223,9 @@ func (sec *Section) mainThread(key string, pch chan Packet, fch <-chan bool) {
 			ses.checkBourbon()
 			if tl != nil && len(tl) > 0 {
 				// スレッドの取得
-				if !ses.getThread(tl, fch) { return }
+				if !ses.getThread(tl, fch) {
+					return
+				}
 			}
 		} else {
 			// 板が移転した可能性あり
@@ -266,7 +272,9 @@ func checkOpen(ch <-chan bool) bool {
 
 func (ses *Session) getBoard(nich *Nich) (Nichs, error) {
 	err := ses.get.SetRequest(nich.Server, nich.Board, "")
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	// キャッシュのスレッド一覧からレス数を取得
 	h := threadResList(nich, ses.get.Cache)
 	// 今のスレッド一覧を取得
@@ -281,11 +289,11 @@ func (ses *Session) getBoard(nich *Nich) (Nichs, error) {
 	for _, it := range list {
 		if d := g_reg_dat.FindStringSubmatch(it); len(d) == 3 {
 			n := &Nich{
-				Server			: nich.Server,
-				Board			: nich.Board,
-				Thread			: d[1],
-				ThreadNumber	: 0,
-				ResNew			: 0,
+				Server:       nich.Server,
+				Board:        nich.Board,
+				Thread:       d[1],
+				ThreadNumber: 0,
+				ResNew:       0,
 			}
 			tnum, converr := strconv.ParseInt(n.Thread, 10, 64)
 			if (converr == nil) && (tnum >= 0) && (tnum <= math.MaxInt32) {
@@ -314,11 +322,17 @@ func (ses *Session) getBoard(nich *Nich) (Nichs, error) {
 
 func (ses *Session) getThread(tl Nichs, fch <-chan bool) bool {
 	for _, nich := range tl {
-		if !checkOpen(fch) { return false }
+		if !checkOpen(fch) {
+			return false
+		}
 		err := ses.get.SetRequest(nich.Server, nich.Board, nich.Thread)
-		if err != nil { continue }
+		if err != nil {
+			continue
+		}
 		moto, err := ses.get.Cache.GetData(nich.Server, nich.Board, nich.Thread)
-		if err != nil { moto = nil }
+		if err != nil {
+			moto = nil
+		}
 		if moto != nil {
 			if bytes.Count(moto, []byte{'\n'}) >= nich.ResNew {
 				// すでに取得済みの場合
@@ -338,7 +352,7 @@ func (ses *Session) getThread(tl Nichs, fch <-chan bool) bool {
 				if moto == nil {
 					// 初回取得時
 					ret = ses.setMysqlTitleQuery(data, nich)
-				} else if code / 100 == 2 {
+				} else if code/100 == 2 {
 					// HTTP Code 200くらい
 					ret = ses.setMysqlResQuery(data, nich)
 				}
@@ -379,8 +393,8 @@ func (ses *Session) setMysqlTitleQuery(data []byte, nich *Nich) (ret string) {
 
 func (ses *Session) createTitleQuery(line string, linecount int, nich *Nich) (str string, err error) {
 	if title := g_reg_title.FindStringSubmatch(line); len(title) > 2 {
-		master := g_reg_tag.ReplaceAllString(title[1], "")	// tag
-		master = g_reg_url.ReplaceAllString(master, "")		// url
+		master := g_reg_tag.ReplaceAllString(title[1], "") // tag
+		master = g_reg_url.ReplaceAllString(master, "")    // url
 		str = fmt.Sprintf(
 			"INSERT INTO thread_title (board,number,title,master,resnum) VALUES('%s',%s,'%s','%s',%d)",
 			nich.Board,
@@ -424,7 +438,9 @@ func utf8Substr(s string, max int) string {
 
 func sjisToUtf8(data []byte) (string, error) {
 	r, err := charset.NewReader("cp932", bytes.NewReader(data))
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 	result, err := ioutil.ReadAll(r)
 	return string(result), err
 }
@@ -435,15 +451,21 @@ func getServer() map[string]string {
 	data, err := get.GetServer()
 	if err != nil {
 		data, err = get.Cache.GetData("", "", "")
-		if err != nil { panic(err.Error()) }
+		if err != nil {
+			panic(err.Error())
+		}
 	}
 	list := strings.Split(string(data), "\n")
 	for _, it := range list {
 		if d := g_reg_bbs.FindStringSubmatch(it); len(d) > 0 {
 			s := d[1]
 			b := d[2]
-			if _, ok := g_filter_server[s]; ok { continue }
-			if _, ok := g_filter_board[b]; ok { continue }
+			if _, ok := g_filter_server[s]; ok {
+				continue
+			}
+			if _, ok := g_filter_board[b]; ok {
+				continue
+			}
 			bl[b] = s
 		}
 	}
@@ -472,8 +494,8 @@ func (sec *Section) updateSection(sl map[string]string) {
 	for _, board := range sec.bl {
 		if server, ok := sl[board]; ok {
 			n := &Nich{
-				Server	: server,
-				Board	: board,
+				Server: server,
+				Board:  board,
 			}
 			if it, ok2 := sec.sl[server]; ok2 {
 				sec.sl[server] = append(it, n)
@@ -487,7 +509,9 @@ func (sec *Section) updateSection(sl map[string]string) {
 func threadResList(nich *Nich, cache get2ch.Cache) map[string]int {
 	h := make(map[string]int)
 	data, err := cache.GetData(nich.Server, nich.Board, "")
-	if err != nil { return h }
+	if err != nil {
+		return h
+	}
 	list := strings.Split(string(data), "\n")
 	for _, it := range list {
 		if d := g_reg_dat.FindStringSubmatch(it); len(d) == 3 {
@@ -514,9 +538,13 @@ func readConfig(sl map[string]string) []*Section {
 
 func (c *Config) read(filename string, sl map[string]string) {
 	data, err := ioutil.ReadFile(filename)
-	if err != nil { return }
+	if err != nil {
+		return
+	}
 	err = json.Unmarshal(data, &c.v)
-	if err != nil { return }
+	if err != nil {
+		return
+	}
 
 	var dbc *DataBase
 	str := c.getDataString("DBHost", "")
@@ -536,12 +564,12 @@ func (c *Config) read(filename string, sl map[string]string) {
 			if data, ok := it.(map[string]interface{}); ok {
 				subc := &Config{v: data}
 				sec := &Section{
-					dbc	: dbc,
-					sc	: SalamiConfig{
-						host	: subc.getDataString("SalamiHost", ""),
-						port	: subc.getDataInt("SalamiPort", 80),
+					dbc: dbc,
+					sc: SalamiConfig{
+						host: subc.getDataString("SalamiHost", ""),
+						port: subc.getDataInt("SalamiPort", 80),
 					},
-					bl	: subc.getDataStringArray("BoardList", nil),
+					bl: subc.getDataStringArray("BoardList", nil),
 				}
 				if sec.bl != nil {
 					for _, board := range sec.bl {
@@ -561,12 +589,12 @@ func (c *Config) read(filename string, sl map[string]string) {
 	}
 	if len(bl) > 0 {
 		sec := &Section{
-			dbc	: dbc,
-			sc	: SalamiConfig{
-				host	: "",
-				port	: 80,
+			dbc: dbc,
+			sc: SalamiConfig{
+				host: "",
+				port: 80,
 			},
-			bl	: bl,
+			bl: bl,
 		}
 		c.section = append(c.section, sec)
 	}
