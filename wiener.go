@@ -15,7 +15,7 @@ import (
 	"math"
 	"os"
 	"regexp"
-	"sort"
+	//"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -81,7 +81,7 @@ const (
 	CONFIG_JSON_PATH_DEF = "wiener.json"
 )
 
-var stdlog *log.Logger = log.New(os.Stdout, "", log.LstdFlags)
+var stdlog *log.Logger = log.New(os.Stdout, "Date:", log.LstdFlags)
 
 var g_reg_bbs *regexp.Regexp = regexp.MustCompile("(.+\\.2ch\\.net|.+\\.bbspink\\.com)/(.+)<>")
 var g_reg_dat *regexp.Regexp = regexp.MustCompile("^(\\d{9,10})\\.dat<>.* \\(([0-9]+)\\)$")
@@ -314,9 +314,9 @@ func (ses *Session) getBoard(nich *Nich) (Nichs, error) {
 			}
 		}
 	}
-	if len(vect) > 1 {
-		sort.Sort(NichsByThreadSince{vect})
-	}
+	//if len(vect) > 1 {
+	//	sort.Sort(NichsByThreadSince{vect})
+	//}
 	return vect, nil
 }
 
@@ -344,7 +344,7 @@ func (ses *Session) getThread(tl Nichs, fch <-chan bool) bool {
 		// バーボン判定
 		ses.checkBourbon()
 		if err != nil {
-			stdlog.Printf("Path:%s/%s/%s\tMessage:%s", nich.Server, nich.Board, nich.Thread, err.Error())
+			stdlog.Printf("\tPath:%s/%s/%s\tMessage:%s", nich.Server, nich.Board, nich.Thread, err.Error())
 		} else {
 			code := ses.get.Info.GetCode()
 			ret := ""
@@ -357,7 +357,7 @@ func (ses *Session) getThread(tl Nichs, fch <-chan bool) bool {
 					ret = ses.setMysqlResQuery(data, nich)
 				}
 			}
-			stdlog.Printf("Code:%d\tPath:%s/%s/%s\tMessage:%s", code, nich.Server, nich.Board, nich.Thread, ret)
+			stdlog.Printf("\tCode:%d\tPath:%s/%s/%s\tMessage:%s", code, nich.Server, nich.Board, nich.Thread, ret)
 		}
 		// 4秒止める
 		time.Sleep(THREAD_SLEEP_TIME)
