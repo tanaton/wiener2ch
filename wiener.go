@@ -33,34 +33,42 @@ type NichsByThreadSince struct {
 	Nichs
 }
 
+type Item struct {
+	Board  string
+	Number string
+	Title  string
+	Master string
+	Resnum int
+	Insert bool
+}
+
 type DataBase struct {
-	host string
-	port int
-	user string
-	pass string
-	name string
+	Host string `json:"DBHost"`
+	Port int    `json:"DBPort"`
+	User string `json:"DBUser"`
+	Pass string `json:"DBPass"`
+	Name string `json:"DBName"`
 }
 
 type SalamiConfig struct {
-	host string
-	port int
+	Host string `json:"SalamiHost"`
+	Port int    `json:"SalamiPort"`
 }
 
 type Section struct {
-	sc  SalamiConfig
-	dbc *DataBase
-	bl  []string
-	sl  map[string]Nichs
-	bbn bool
+	SalamiConfig
+	Bl  []string         `json:"BoardList"`
+	Sl  map[string]Nichs `json:"-"`
+	Dbc chan<- Item      `json:"-"`
 }
 
 type Config struct {
-	v       map[string]interface{}
-	section []*Section
+	DataBase
+	Sec []*Section `json:"SectionList"`
 }
 
 type Session struct {
-	db       mysql.Conn
+	dbc      chan<- Item
 	get      *get2ch.Get2ch
 	bbn      bool
 	bbnLimit time.Time
@@ -126,17 +134,72 @@ func main() {
 
 func start(slch <-chan map[string]string, sync chan<- *Section) {
 	sl := <-slch
-	seclist := readConfig(sl)
+	conf := readConfig(sl)
+	dbc := startDb(conf)
 	// メイン処理
-	for _, sec := range seclist {
+	for _, sec := range conf.Sec {
+		sec.Dbc = dbc
 		sec.updateSection(sl)
 		go sec.mainSection(sync)
 		time.Sleep(GO_THREAD_SLEEP_TIME)
 	}
 }
 
+func startDb(c *Config) chan Item {
+	dbc := make(chan Item, 1024)
+	go func() {
+		count := 0
+		con := dbconn(c)
+		for it := range dbc {
+			if count > 1024 {
+				if con != nil {
+					con.Close()
+				}
+				con = dbconn(c)
+				count = 0
+			}
+			if con != nil {
+				var query string
+				if it.Insert {
+					query = fmt.Sprintf(
+						"INSERT INTO thread_title (board,number,title,master,resnum) VALUES('%s',%s,'%s','%s',%d)",
+						it.Board,
+						it.Number,
+						con.EscapeString(it.Title),
+						con.EscapeString(utf8Substr(it.Master, 100)),
+						it.Resnum)
+				} else {
+					query = fmt.Sprintf(
+						"UPDATE thread_title SET resnum=%d WHERE board='%s' AND number=%s",
+						it.Resnum,
+						it.Board,
+						it.Number)
+				}
+				_, _, err := con.Query(query)
+				if err != nil {
+					log.Printf("mysql query error [%s]", query)
+				}
+			}
+			count++
+		}
+	}()
+	return dbc
+}
+
+func dbconn(c *Config) (con mysql.Conn) {
+	if c.DataBase.Host != "" {
+		con = mysql.New("tcp", "", fmt.Sprintf("%s:%d", c.DataBase.Host, c.DataBase.Port), c.DataBase.User, c.DataBase.Pass, c.DataBase.Name)
+		err := con.Connect()
+		if err != nil {
+			log.Printf("mainThread() DB接続失敗")
+			con = nil
+		}
+	}
+	return
+}
+
 func (sec *Section) mainSection(sync chan<- *Section) {
-	pch := make(chan Packet, len(sec.sl))
+	pch := make(chan Packet, len(sec.Sl))
 	fch := make(chan bool)
 	defer func() {
 		if r := recover(); r != nil {
@@ -150,7 +213,7 @@ func (sec *Section) mainSection(sync chan<- *Section) {
 		sync <- sec
 	}()
 
-	for key := range sec.sl {
+	for key := range sec.Sl {
 		go sec.mainThread(key, pch, fch)
 		time.Sleep(GO_THREAD_SLEEP_TIME)
 	}
@@ -190,28 +253,17 @@ func (sec *Section) mainThread(key string, pch chan Packet, fch <-chan bool) {
 
 	ses := &Session{
 		get: get2ch.NewGet2ch(get2ch.NewFileCache(DAT_DIR)),
-		bbn: sec.bbn,
+		dbc: sec.Dbc,
 	}
-	if sec.sc.host != "" {
-		ses.get.SetSalami(sec.sc.host, sec.sc.port)
+	if sec.SalamiConfig.Host != "" {
+		ses.get.SetSalami(sec.SalamiConfig.Host, sec.SalamiConfig.Port)
 	}
 
-	bl, ok := sec.sl[key]
+	bl, ok := sec.Sl[key]
 	if ok == false {
 		return
 	}
 
-	if sec.dbc != nil {
-		ses.db = mysql.New("tcp", "", fmt.Sprintf("%s:%d", sec.dbc.host, sec.dbc.port), sec.dbc.user, sec.dbc.pass, sec.dbc.name)
-		err := ses.db.Connect()
-		if err != nil {
-			log.Printf("mainThread() DB接続失敗 key:%s", key)
-			ses.db = nil
-		} else {
-			// DB接続に成功した場合、閉じる予約をしておく
-			defer ses.db.Close()
-		}
-	}
 	for _, nich := range bl {
 		if !checkOpen(fch) {
 			return
@@ -348,7 +400,7 @@ func (ses *Session) getThread(tl Nichs, fch <-chan bool) bool {
 		} else {
 			code := ses.get.Info.GetCode()
 			ret := ""
-			if ses.db != nil && data != nil {
+			if data != nil {
 				if moto == nil {
 					// 初回取得時
 					ret = ses.setMysqlTitleQuery(data, nich)
@@ -366,7 +418,7 @@ func (ses *Session) getThread(tl Nichs, fch <-chan bool) bool {
 }
 
 func (ses *Session) setMysqlTitleQuery(data []byte, nich *Nich) (ret string) {
-	ret = "error"
+	ret = "insert"
 	str, err := sjisToUtf8(data)
 	if err != nil {
 		ret = err.Error()
@@ -376,32 +428,26 @@ func (ses *Session) setMysqlTitleQuery(data []byte, nich *Nich) (ret string) {
 	list := strings.Split(str, "\n")
 	linecount := strings.Count(str, "\n")
 	if len(list) > 0 {
-		query, err := ses.createTitleQuery(list[0], linecount, nich)
-		if err == nil {
-			_, _, err := ses.db.Query(query)
-			if err == nil {
-				ret = "insert"
-			} else {
-				ret = err.Error()
-			}
-		} else {
+		err := ses.createTitleQuery(list[0], linecount, nich)
+		if err != nil {
 			ret = err.Error()
 		}
 	}
 	return
 }
 
-func (ses *Session) createTitleQuery(line string, linecount int, nich *Nich) (str string, err error) {
+func (ses *Session) createTitleQuery(line string, linecount int, nich *Nich) (err error) {
 	if title := g_reg_title.FindStringSubmatch(line); len(title) > 2 {
 		master := g_reg_tag.ReplaceAllString(title[1], "") // tag
 		master = g_reg_url.ReplaceAllString(master, "")    // url
-		str = fmt.Sprintf(
-			"INSERT INTO thread_title (board,number,title,master,resnum) VALUES('%s',%s,'%s','%s',%d)",
-			nich.Board,
-			nich.Thread,
-			ses.db.EscapeString(title[2]),
-			ses.db.EscapeString(utf8Substr(master, 100)),
-			linecount)
+		ses.dbc <- Item{
+			Board:  nich.Board,
+			Number: nich.Thread,
+			Title:  title[2],
+			Master: master,
+			Resnum: linecount,
+			Insert: true,
+		}
 	} else {
 		err = errors.New("reg error")
 	}
@@ -409,19 +455,14 @@ func (ses *Session) createTitleQuery(line string, linecount int, nich *Nich) (st
 }
 
 func (ses *Session) setMysqlResQuery(data []byte, nich *Nich) (ret string) {
-	ret = "error"
+	ret = "update"
 	linecount := bytes.Count(data, []byte{'\n'})
 	if linecount > 1 {
-		query := fmt.Sprintf(
-			"UPDATE thread_title SET resnum=%d WHERE board='%s' AND number=%s",
-			linecount,
-			nich.Board,
-			nich.Thread)
-		_, _, err := ses.db.Query(query)
-		if err == nil {
-			ret = "update"
-		} else {
-			ret = err.Error()
+		ses.dbc <- Item{
+			Board:  nich.Board,
+			Number: nich.Thread,
+			Resnum: linecount,
+			Insert: false,
 		}
 	}
 	return
@@ -490,19 +531,17 @@ func getServerCh() <-chan map[string]string {
 }
 
 func (sec *Section) updateSection(sl map[string]string) {
-	sec.sl = make(map[string]Nichs)
-	for _, board := range sec.bl {
+	sec.Sl = make(map[string]Nichs)
+	for _, board := range sec.Bl {
 		if server, ok := sl[board]; ok {
 			n := &Nich{
 				Server: server,
 				Board:  board,
 			}
-			if it, ok2 := sec.sl[server]; ok2 {
-				sec.sl[server] = append(it, n)
+			if it, ok2 := sec.Sl[server]; ok2 {
+				sec.Sl[server] = append(it, n)
 			} else {
-				sec.sl[server] = Nichs{
-					n,
-				}
+				sec.Sl[server] = Nichs{n}
 			}
 		}
 	}
@@ -525,8 +564,8 @@ func threadResList(nich *Nich, cache get2ch.Cache) map[string]int {
 	return h
 }
 
-func readConfig(sl map[string]string) []*Section {
-	c := &Config{v: make(map[string]interface{})}
+func readConfig(sl map[string]string) *Config {
+	c := &Config{}
 	argc := len(os.Args)
 	var path string
 	if argc == 2 {
@@ -535,7 +574,7 @@ func readConfig(sl map[string]string) []*Section {
 		path = CONFIG_JSON_PATH_DEF
 	}
 	c.read(path, sl)
-	return c.section
+	return c
 }
 
 func (c *Config) read(filename string, sl map[string]string) {
@@ -543,112 +582,31 @@ func (c *Config) read(filename string, sl map[string]string) {
 	if err != nil {
 		return
 	}
-	err = json.Unmarshal(data, &c.v)
+	err = json.Unmarshal(data, c)
 	if err != nil {
 		return
 	}
 
-	var dbc *DataBase
-	str := c.getDataString("DBHost", "")
-	if str != "" {
-		dbc = &DataBase{host: str}
-		dbc.port = c.getDataInt("DBPort", 3306)
-		dbc.user = c.getDataString("DBUser", "root")
-		dbc.pass = c.getDataString("DBPass", "passwd")
-		dbc.name = c.getDataString("DBName", "test")
-	}
-
-	c.section = []*Section{}
 	m := make(map[string]bool)
-	l := c.getDataArray("SectionList", nil)
-	if l != nil {
-		for _, it := range l {
-			if data, ok := it.(map[string]interface{}); ok {
-				subc := &Config{v: data}
-				sec := &Section{
-					dbc: dbc,
-					sc: SalamiConfig{
-						host: subc.getDataString("SalamiHost", ""),
-						port: subc.getDataInt("SalamiPort", 80),
-					},
-					bl: subc.getDataStringArray("BoardList", nil),
-				}
-				if sec.bl != nil {
-					for _, board := range sec.bl {
-						m[board] = true
-					}
-				}
-				c.section = append(c.section, sec)
-			}
+	for _, it := range c.Sec {
+		for _, board := range it.Bl {
+			m[board] = true
 		}
 	}
 	bl := []string{}
 	for b, _ := range sl {
-		if _, ok := m[b]; ok == false {
+		if _, ok := m[b]; !ok {
 			// 設定ファイルに記載の無い板だった場合
 			bl = append(bl, b)
 		}
 	}
 	if len(bl) > 0 {
-		sec := &Section{
-			dbc: dbc,
-			sc: SalamiConfig{
-				host: "",
-				port: 80,
+		c.Sec = append(c.Sec, &Section{
+			SalamiConfig: SalamiConfig{
+				Host: "",
+				Port: 80,
 			},
-			bl: bl,
-		}
-		c.section = append(c.section, sec)
+			Bl: bl,
+		})
 	}
-	if len(c.section) == 0 {
-		c.section = nil
-	}
-}
-
-func (c *Config) getDataInt(h string, def int) (ret int) {
-	ret = def
-	if it, ok := c.v[h]; ok {
-		if f, err := it.(float64); err {
-			ret = int(f)
-		}
-	}
-	return
-}
-
-func (c *Config) getDataString(h, def string) (ret string) {
-	ret = def
-	if it, ok := c.v[h]; ok {
-		if ret, ok = it.(string); !ok {
-			ret = def
-		}
-	}
-	return
-}
-
-func (c *Config) getDataArray(h string, def []interface{}) (ret []interface{}) {
-	ret = def
-	if it, ok := c.v[h]; ok {
-		if arr, ok := it.([]interface{}); ok {
-			ret = arr
-		}
-	}
-	return
-}
-
-func (c *Config) getDataStringArray(h string, def []string) (ret []string) {
-	sil := c.getDataArray(h, nil)
-
-	ret = def
-	if sil != nil {
-		ret = []string{}
-		for _, it := range sil {
-			if s, ok := it.(string); ok {
-				ret = append(ret, s)
-			} else {
-				ret = def
-				break
-			}
-		}
-	}
-	return
 }
