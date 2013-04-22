@@ -154,6 +154,7 @@ func startDb(c *Config) chan Item {
 			if count > 1024 {
 				if con != nil {
 					con.Close()
+					con = nil
 				}
 				con = dbconn(c)
 				count = 0
