@@ -135,7 +135,7 @@ func main() {
 func start(slch <-chan map[string]string, sync chan<- *Section) {
 	sl := <-slch
 	conf := readConfig(sl)
-	dbc := startDb(conf)
+	dbc := conf.startDataBase()
 	// メイン処理
 	for _, sec := range conf.Sec {
 		sec.Dbc = dbc
@@ -143,60 +143,6 @@ func start(slch <-chan map[string]string, sync chan<- *Section) {
 		go sec.mainSection(sync)
 		time.Sleep(GO_THREAD_SLEEP_TIME)
 	}
-}
-
-func startDb(c *Config) chan Item {
-	dbc := make(chan Item, 1024)
-	go func() {
-		count := 0
-		con := dbconn(c)
-		for it := range dbc {
-			if count > 1024 {
-				if con != nil {
-					con.Close()
-					con = nil
-				}
-				con = dbconn(c)
-				count = 0
-			}
-			if con != nil {
-				var query string
-				if it.Insert {
-					query = fmt.Sprintf(
-						"INSERT INTO thread_title (board,number,title,master,resnum) VALUES('%s',%s,'%s','%s',%d)",
-						it.Board,
-						it.Number,
-						con.EscapeString(it.Title),
-						con.EscapeString(utf8Substr(it.Master, 100)),
-						it.Resnum)
-				} else {
-					query = fmt.Sprintf(
-						"UPDATE thread_title SET resnum=%d WHERE board='%s' AND number=%s",
-						it.Resnum,
-						it.Board,
-						it.Number)
-				}
-				_, _, err := con.Query(query)
-				if err != nil {
-					log.Printf("mysql query error [%s]", query)
-				}
-			}
-			count++
-		}
-	}()
-	return dbc
-}
-
-func dbconn(c *Config) (con mysql.Conn) {
-	if c.DataBase.Host != "" {
-		con = mysql.New("tcp", "", fmt.Sprintf("%s:%d", c.DataBase.Host, c.DataBase.Port), c.DataBase.User, c.DataBase.Pass, c.DataBase.Name)
-		err := con.Connect()
-		if err != nil {
-			log.Printf("mainThread() DB接続失敗")
-			con = nil
-		}
-	}
-	return
 }
 
 func (sec *Section) mainSection(sync chan<- *Section) {
@@ -610,4 +556,58 @@ func (c *Config) read(filename string, sl map[string]string) {
 			Bl: bl,
 		})
 	}
+}
+
+func (c *Config) startDataBase() chan Item {
+	dbc := make(chan Item, 1024)
+	go func() {
+		count := 0
+		con := c.connectDataBase()
+		for it := range dbc {
+			if count > 1024 {
+				if con != nil {
+					con.Close()
+					con = nil
+				}
+				con = c.connectDataBase()
+				count = 0
+			}
+			if con != nil && it.Board != "" && it.Number != "" {
+				var query string
+				if it.Insert {
+					query = fmt.Sprintf(
+						"INSERT INTO thread_title (board,number,title,master,resnum) VALUES('%s',%s,'%s','%s',%d)",
+						it.Board,
+						it.Number,
+						con.EscapeString(it.Title),
+						con.EscapeString(utf8Substr(it.Master, 100)),
+						it.Resnum)
+				} else {
+					query = fmt.Sprintf(
+						"UPDATE thread_title SET resnum=%d WHERE board='%s' AND number=%s",
+						it.Resnum,
+						it.Board,
+						it.Number)
+				}
+				_, _, err := con.Query(query)
+				if err != nil {
+					log.Printf("mysql query error [%s]", query)
+				}
+			}
+			count++
+		}
+	}()
+	return dbc
+}
+
+func (c *Config) connectDataBase() (con mysql.Conn) {
+	if c.DataBase.Host != "" {
+		con = mysql.New("tcp", "", fmt.Sprintf("%s:%d", c.DataBase.Host, c.DataBase.Port), c.DataBase.User, c.DataBase.Pass, c.DataBase.Name)
+		err := con.Connect()
+		if err != nil {
+			log.Printf("mainThread() DB接続失敗")
+			con = nil
+		}
+	}
+	return
 }
