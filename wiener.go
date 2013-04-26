@@ -87,6 +87,7 @@ const (
 	SERVER_CYCLE_TIME    = 60 * time.Minute
 	BBN_LIMIT_TIME       = 10 * time.Minute
 	CONFIG_JSON_PATH_DEF = "wiener.json"
+	DB_BUFFER_SIZE       = 128
 )
 
 var stdlog *log.Logger = log.New(os.Stdout, "Date:", log.LstdFlags)
@@ -559,18 +560,12 @@ func (c *Config) read(filename string, sl map[string]string) {
 }
 
 func (c *Config) startDataBase() chan Item {
-	dbc := make(chan Item, 1024)
+	dbc := make(chan Item, DB_BUFFER_SIZE)
 	go func() {
-		count := 0
 		con := c.connectDataBase()
 		for it := range dbc {
-			if count > 1024 {
-				if con != nil {
-					con.Close()
-					con = nil
-				}
+			if con == nil {
 				con = c.connectDataBase()
-				count = 0
 			}
 			if con != nil && it.Board != "" && it.Number != "" {
 				var query string
@@ -592,9 +587,14 @@ func (c *Config) startDataBase() chan Item {
 				_, _, err := con.Query(query)
 				if err != nil {
 					log.Printf("mysql query error [%s]", query)
+					con.Close()
+					con = nil
 				}
 			}
-			count++
+		}
+		if con != nil {
+			con.Close()
+			con = nil
 		}
 	}()
 	return dbc
