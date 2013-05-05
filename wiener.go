@@ -80,14 +80,17 @@ type Packet struct {
 }
 
 const (
-	DAT_DIR              = "/2ch/dat"
-	GO_THREAD_SLEEP_TIME = 2 * time.Second
-	THREAD_SLEEP_TIME    = 4 * time.Second
-	RESTART_SLEEP_TIME   = 3 * time.Minute
-	SERVER_CYCLE_TIME    = 60 * time.Minute
-	BBN_LIMIT_TIME       = 10 * time.Minute
-	CONFIG_JSON_PATH_DEF = "wiener.json"
-	DB_BUFFER_SIZE       = 128
+	DAT_DIR                   = "/2ch/dat"
+	GO_THREAD_SLEEP_TIME      = 2 * time.Second
+	THREAD_SLEEP_TIME         = 4 * time.Second
+	RESTART_SLEEP_TIME        = 3 * time.Minute
+	SERVER_CYCLE_TIME         = 180 * time.Minute
+	BBN_LIMIT_TIME            = 10 * time.Minute
+	CONFIG_JSON_PATH_DEF      = "wiener.json"
+	DB_BUFFER_SIZE            = 128
+	LF_STR                    = "\n"
+	LF_BYTE              byte = '\n'
+	SERVER_CHAN_MAX           = 4
 )
 
 var stdlog *log.Logger = log.New(os.Stdout, "Date:", log.LstdFlags)
@@ -285,7 +288,7 @@ func (ses *Session) getBoard(nich *Nich) (Nichs, error) {
 	}
 	ses.get.GetBoardName()
 	vect := Nichs{}
-	list := strings.Split(string(data), "\n")
+	list := strings.Split(string(data), LF_STR)
 	for _, it := range list {
 		if d := g_reg_dat.FindStringSubmatch(it); len(d) == 3 {
 			n := &Nich{
@@ -330,22 +333,19 @@ func (ses *Session) getThread(tl Nichs, fch <-chan bool) bool {
 			continue
 		}
 		moto, err := ses.get.Cache.GetData(nich.Server, nich.Board, nich.Thread)
-		if err != nil {
-			moto = nil
-		}
-		if moto != nil {
-			if bytes.Count(moto, []byte{'\n'}) >= nich.ResNew {
+		if err == nil && moto != nil {
+			if bytes.Count(moto, []byte{LF_BYTE}) >= nich.ResNew {
 				// すでに取得済みの場合
 				continue
 			}
+		} else {
+			moto = nil
 		}
 		// 読みに行く
 		data, err := ses.get.GetData()
 		// バーボン判定
 		ses.checkBourbon()
-		if err != nil {
-			stdlog.Printf("\tPath:%s/%s/%s\tMessage:%s", nich.Server, nich.Board, nich.Thread, err.Error())
-		} else {
+		if err == nil {
 			code := ses.get.Info.GetCode()
 			ret := ""
 			if data != nil {
@@ -358,6 +358,8 @@ func (ses *Session) getThread(tl Nichs, fch <-chan bool) bool {
 				}
 			}
 			stdlog.Printf("\tCode:%d\tPath:%s/%s/%s\tMessage:%s", code, nich.Server, nich.Board, nich.Thread, ret)
+		} else {
+			stdlog.Printf("\tPath:%s/%s/%s\tMessage:%s", nich.Server, nich.Board, nich.Thread, err.Error())
 		}
 		// 4秒止める
 		time.Sleep(THREAD_SLEEP_TIME)
@@ -373,8 +375,8 @@ func (ses *Session) setMysqlTitleQuery(data []byte, nich *Nich) (ret string) {
 		return
 	}
 
-	list := strings.Split(str, "\n")
-	linecount := strings.Count(str, "\n")
+	list := strings.Split(str, LF_STR)
+	linecount := strings.Count(str, LF_STR)
 	if len(list) > 0 {
 		err := ses.createTitleQuery(list[0], linecount, nich)
 		if err != nil {
@@ -404,7 +406,7 @@ func (ses *Session) createTitleQuery(line string, linecount int, nich *Nich) (er
 
 func (ses *Session) setMysqlResQuery(data []byte, nich *Nich) (ret string) {
 	ret = "update"
-	linecount := bytes.Count(data, []byte{'\n'})
+	linecount := bytes.Count(data, []byte{LF_BYTE})
 	if linecount > 1 {
 		ses.dbc <- Item{
 			Board:  nich.Board,
@@ -444,7 +446,7 @@ func getServer() map[string]string {
 			panic(err.Error())
 		}
 	}
-	list := strings.Split(string(data), "\n")
+	list := strings.Split(string(data), LF_STR)
 	for _, it := range list {
 		if d := g_reg_bbs.FindStringSubmatch(it); len(d) > 0 {
 			s := d[1]
@@ -462,7 +464,7 @@ func getServer() map[string]string {
 }
 
 func getServerCh() <-chan map[string]string {
-	ch := make(chan map[string]string, 4)
+	ch := make(chan map[string]string, SERVER_CHAN_MAX)
 	go func() {
 		tch := time.Tick(SERVER_CYCLE_TIME)
 		sl := getServer()
@@ -501,7 +503,7 @@ func threadResList(nich *Nich, cache get2ch.Cache) map[string]int {
 	if err != nil {
 		return h
 	}
-	list := strings.Split(string(data), "\n")
+	list := strings.Split(string(data), LF_STR)
 	for _, it := range list {
 		if d := g_reg_dat.FindStringSubmatch(it); len(d) == 3 {
 			if m, err := strconv.Atoi(d[2]); err == nil {
@@ -559,7 +561,7 @@ func (c *Config) read(filename string, sl map[string]string) {
 	}
 }
 
-func (c *Config) startDataBase() chan Item {
+func (c *Config) startDataBase() chan<- Item {
 	dbc := make(chan Item, DB_BUFFER_SIZE)
 	go func() {
 		con := c.connectDataBase()
