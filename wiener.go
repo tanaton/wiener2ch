@@ -125,9 +125,8 @@ func main() {
 	// 起動
 	start(slch, sync)
 
-	for {
-		// 処理を止める
-		sec := <-sync
+	// 処理を止める
+	for sec := range sync {
 		log.Printf("main() 鯖移転 %v", sec)
 		<-slch
 		sl := <-slch
