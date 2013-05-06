@@ -167,8 +167,7 @@ func (sec *Section) mainSection(sync chan<- *Section) {
 		go sec.mainThread(key, pch, fch)
 		time.Sleep(GO_THREAD_SLEEP_TIME)
 	}
-	for {
-		pack := <-pch
+	for pack := range pch {
 		if pack.jmp {
 			// 鯖移転の可能性
 			log.Printf("mainSection() 鯖移転 %v", pack)
@@ -286,8 +285,9 @@ func (ses *Session) getBoard(nich *Nich) (Nichs, error) {
 		return nil, err
 	}
 	ses.get.GetBoardName()
-	vect := Nichs{}
 	list := strings.Split(string(data), LF_STR)
+	vect := make(Nichs, len(list) + 1)
+	l := 0
 	for _, it := range list {
 		if d := g_reg_dat.FindStringSubmatch(it); len(d) == 3 {
 			n := &Nich{
@@ -306,20 +306,19 @@ func (ses *Session) getBoard(nich *Nich) (Nichs, error) {
 					if j, ok := h[n.Thread]; ok {
 						if i > j {
 							// スレッドが更新されている
-							vect = append(vect, n)
+							vect[l] = n
+							l++
 						}
 					} else {
 						// 取得していないスレッド
-						vect = append(vect, n)
+						vect[l] = n
+						l++
 					}
 				}
 			}
 		}
 	}
-	//if len(vect) > 1 {
-	//	sort.Sort(NichsByThreadSince{vect})
-	//}
-	return vect, nil
+	return vect[:l], nil
 }
 
 func (ses *Session) getThread(tl Nichs, fch <-chan bool) bool {
@@ -368,16 +367,16 @@ func (ses *Session) getThread(tl Nichs, fch <-chan bool) bool {
 
 func (ses *Session) setMysqlTitleQuery(data []byte, nich *Nich) (ret string) {
 	ret = "insert"
-	str, err := sjisToUtf8(data)
+	b, err := sjisToUtf8(data)
 	if err != nil {
 		ret = err.Error()
 		return
 	}
 
-	list := strings.Split(str, LF_STR)
-	linecount := strings.Count(str, LF_STR)
-	if len(list) > 0 {
-		err := ses.createTitleQuery(list[0], linecount, nich)
+	linecount := bytes.Count(b, []byte{LF_BYTE})
+	if linecount > 0 {
+		index := bytes.IndexByte(b, LF_BYTE)
+		err := ses.createTitleQuery(string(b[:index+1]), linecount, nich)
 		if err != nil {
 			ret = err.Error()
 		}
@@ -426,13 +425,14 @@ func utf8Substr(s string, max int) string {
 	return string(r[:l])
 }
 
-func sjisToUtf8(data []byte) (string, error) {
-	r, err := charset.NewReader("cp932", bytes.NewReader(data))
-	if err != nil {
-		return "", err
+func sjisToUtf8(data []byte) (ret []byte, err error) {
+	r, e := charset.NewReader("cp932", bytes.NewReader(data))
+	if e == nil {
+		ret, err = ioutil.ReadAll(r)
+	} else {
+		err = e
 	}
-	result, err := ioutil.ReadAll(r)
-	return string(result), err
+	return
 }
 
 func getServer() map[string]string {
@@ -538,8 +538,8 @@ func (c *Config) read(filename string, sl map[string]string) {
 
 	m := make(map[string]bool)
 	for _, it := range c.Sec {
-		for _, board := range it.Bl {
-			m[board] = true
+		for _, b := range it.Bl {
+			m[b] = true
 		}
 	}
 	bl := []string{}
@@ -563,7 +563,7 @@ func (c *Config) read(filename string, sl map[string]string) {
 func (c *Config) startDataBase() chan<- Item {
 	dbc := make(chan Item, DB_BUFFER_SIZE)
 	go func() {
-		con := c.connectDataBase()
+		var con mysql.Conn
 		for it := range dbc {
 			if con == nil {
 				con = c.connectDataBase()
