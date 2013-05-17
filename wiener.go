@@ -575,8 +575,8 @@ func (c *Config) startDataBase() chan<- Item {
 						"INSERT INTO thread_title (board,number,title,master,resnum) VALUES('%s',%s,'%s','%s',%d)",
 						it.Board,
 						it.Number,
-						con.EscapeString(it.Title),
-						con.EscapeString(utf8Substr(it.Master, 100)),
+						con.Escape(it.Title),
+						con.Escape(utf8Substr(it.Master, 100)),
 						it.Resnum)
 				} else {
 					query = fmt.Sprintf(
